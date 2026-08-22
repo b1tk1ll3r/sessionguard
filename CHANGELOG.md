@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- Fixed Farm member count in the Master WebUI. The table now uses the same membership rules as the broker: explicit `farm.agent_ids`, agent-side `agent.farm_ids`, and `required_tags`.
+- Farm member names are available as a tooltip on the member count.
+
 ## 0.3.1 - Web UI editor stability
 
 - Fixed Master live refresh replacing Farm, Resource and server-control forms every five seconds.

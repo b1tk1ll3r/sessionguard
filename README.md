@@ -283,4 +283,4 @@ The current source tree contains unit tests for configuration, templates, profil
 
 ## Production-candidate status
 
-The design intentionally fails closed around destructive profile operations and broker farm boundaries. Nevertheless, v0.3.1 should be introduced as a canary before broad production rollout. In particular, validate native WTS behavior, SMB failure/recovery, PostgreSQL backup/restore, Guacamole extension loading and your exact PocketID group claims in your environment.
+The design intentionally fails closed around destructive profile operations and broker farm boundaries. Nevertheless, v0.3.2 should be introduced as a canary before broad production rollout. In particular, validate native WTS behavior, SMB failure/recovery, PostgreSQL backup/restore, Guacamole extension loading and your exact PocketID group claims in your environment.
