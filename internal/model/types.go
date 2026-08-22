@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-const ProtocolVersion = 3
+const ProtocolVersion = 4
 
 type OIDCConfig struct {
 	Issuer       string   `json:"issuer"`
@@ -107,6 +107,38 @@ type Policy struct {
 	Profiles  ProfilePolicy  `json:"profiles"`
 	Sessions  SessionPolicy  `json:"sessions"`
 	Templates []TemplateItem `json:"templates,omitempty"`
+}
+
+// RemoteAppSpec describes the desired RemoteApp registration on an RD Session Host.
+// ResourceID binds the local Windows publication back to the SessionGuard resource.
+type RemoteAppSpec struct {
+	ResourceID          string `json:"resource_id"`
+	Alias               string `json:"alias"`
+	DisplayName         string `json:"display_name"`
+	Path                string `json:"path"`
+	IconPath            string `json:"icon_path,omitempty"`
+	IconIndex           int32  `json:"icon_index,omitempty"`
+	CommandLineSetting  uint32 `json:"command_line_setting"` // 0=deny, 1=allow, 2=require
+	RequiredCommandLine string `json:"required_command_line,omitempty"`
+	ShowInPortal        bool   `json:"show_in_portal,omitempty"`
+}
+
+// RemoteAppStatus is the agent-observed state of a RemoteApp publication.
+type RemoteAppStatus struct {
+	ResourceID          string    `json:"resource_id,omitempty"`
+	Alias               string    `json:"alias"`
+	DisplayName         string    `json:"display_name,omitempty"`
+	Path                string    `json:"path,omitempty"`
+	VPath               string    `json:"vpath,omitempty"`
+	PathExists          bool      `json:"path_exists"`
+	Published           bool      `json:"published"`
+	Managed             bool      `json:"managed"`
+	Owned               bool      `json:"owned,omitempty"` // registration was created by SessionGuard
+	InSync              bool      `json:"in_sync"`
+	CommandLineSetting  uint32    `json:"command_line_setting,omitempty"`
+	RequiredCommandLine string    `json:"required_command_line,omitempty"`
+	Error               string    `json:"error,omitempty"`
+	ObservedAt          time.Time `json:"observed_at"`
 }
 
 type Session struct {
@@ -264,6 +296,7 @@ type AgentSnapshot struct {
 	ProfileStatus   map[string]ProfileStatus    `json:"profile_status,omitempty"`
 	Events          []AgentEvent                `json:"events,omitempty"`
 	CommandResults  []CommandResult             `json:"command_results,omitempty"`
+	RemoteApps      []RemoteAppStatus           `json:"remote_apps,omitempty"`
 	Policy          Policy                      `json:"policy"`
 	PolicyRevision  string                      `json:"policy_revision"`
 	AgentVersion    string                      `json:"agent_version"`
@@ -306,6 +339,13 @@ type Resource struct {
 	RemoteApp               string `json:"remote_app,omitempty"`
 	RemoteAppDir            string `json:"remote_app_dir,omitempty"`
 	RemoteAppArgs           string `json:"remote_app_args,omitempty"`
+	ManageRemoteApp         bool   `json:"manage_remote_app,omitempty"`
+	RemoteAppPath           string `json:"remote_app_path,omitempty"`
+	RemoteAppIconPath       string `json:"remote_app_icon_path,omitempty"`
+	RemoteAppIconIndex      int32  `json:"remote_app_icon_index,omitempty"`
+	RemoteAppCommandLine    uint32 `json:"remote_app_command_line_setting,omitempty"` // 0=deny, 1=allow, 2=require
+	RemoteAppRequiredArgs   string `json:"remote_app_required_command_line,omitempty"`
+	RemoteAppShowInPortal   bool   `json:"remote_app_show_in_portal,omitempty"`
 	Enabled                 bool   `json:"enabled"`
 }
 
@@ -388,7 +428,8 @@ type EnrollResponse struct {
 }
 
 type HeartbeatResponse struct {
-	DesiredPolicy *Policy          `json:"desired_policy,omitempty"`
-	Commands      []SessionCommand `json:"commands,omitempty"`
-	ServerTime    time.Time        `json:"server_time"`
+	DesiredPolicy     *Policy          `json:"desired_policy,omitempty"`
+	DesiredRemoteApps []RemoteAppSpec  `json:"desired_remote_apps"`
+	Commands          []SessionCommand `json:"commands,omitempty"`
+	ServerTime        time.Time        `json:"server_time"`
 }

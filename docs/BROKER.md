@@ -1,4 +1,4 @@
-# Broker, Farms and Published Resources
+# Broker, Farms, Apps and Desktops
 
 ## Goal
 
@@ -46,7 +46,7 @@ Desktop example:
 }
 ```
 
-RemoteApp example:
+RemoteApp example (Guacamole parameters only):
 
 ```json
 {
@@ -61,6 +61,19 @@ RemoteApp example:
 }
 ```
 
+To let SessionGuard publish and continuously reconcile the RemoteApp on all members of the farm, additionally set:
+
+```json
+{
+  "manage_remote_app": true,
+  "remote_app_path": "C:\\Program Files\\Sage\\Sage.exe",
+  "remote_app_command_line_setting": 0,
+  "remote_app_show_in_portal": false
+}
+```
+
+The Master sends this desired state only to Agents that are members of the Resource farm. Agents use the local Terminal Services WMI provider, report the observed state, and never delete unrelated/manual RemoteApps.
+
 Connection ID matching is preferred where stable IDs are known; connection-name matching is case-insensitive and convenient for initial deployment.
 
 ## Placement algorithm
@@ -73,13 +86,15 @@ Given `username`, optional `resource_id`, `farm_id`, and Guacamole connection id
 4. If `reconnect_existing` is enabled, search only matching farm members for an existing `Active`, `Connected` or `Disconnected` session for the user.
 5. `maintenance` hosts are excluded from reconnect; `drain` hosts are allowed for reconnect.
 6. Reuse a non-expired lease if its host is still available and belongs to the farm.
-7. For a new session, consider only hosts that are:
+7. For a managed RemoteApp Resource, require the Agent to report that exact Resource as `published`, `path_exists` and `in_sync` with no error. This readiness gate also applies to reconnect and lease reuse.
+8. For a new session, consider only hosts that are:
    - online,
    - in `online` maintenance mode,
    - members of the farm,
-   - at or above `min_health_score`.
-8. Rank candidates by broker score and select the highest score.
-9. Create or refresh the lease and return connection tokens.
+   - at or above `min_health_score`,
+   - application-ready when Agent-managed RemoteApp publication is enabled.
+9. Rank candidates by broker score and select the highest score.
+10. Create or refresh the lease and return connection tokens.
 
 ## Broker score
 

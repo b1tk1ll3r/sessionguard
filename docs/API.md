@@ -1,4 +1,4 @@
-# HTTP API (v0.3)
+# HTTP API (v0.4)
 
 All JSON APIs return an error object with an `error` field on failure unless otherwise stated.
 
@@ -114,7 +114,26 @@ Farm fields include `name`, `description`, `agent_ids`, `required_tags`, optiona
 - `PUT /api/v1/resources/{id}` – `manage`
 - `DELETE /api/v1/resources/{id}` – `manage`
 
-Resource fields include desktop/RemoteApp kind, farm ID, Guacamole connection ID/name and RemoteApp parameters.
+Resource fields include desktop/RemoteApp kind, farm ID, Guacamole connection ID/name and RemoteApp parameters. RemoteApp resources additionally support Agent-managed local publication:
+
+```json
+{
+  "name": "Sage",
+  "kind": "remoteapp",
+  "farm_id": "erp",
+  "remote_app": "||Sage",
+  "manage_remote_app": true,
+  "remote_app_path": "C:\\Program Files\\Sage\\Sage.exe",
+  "remote_app_icon_path": "",
+  "remote_app_icon_index": 0,
+  "remote_app_command_line_setting": 0,
+  "remote_app_required_command_line": "",
+  "remote_app_show_in_portal": false,
+  "enabled": true
+}
+```
+
+`remote_app_command_line_setting` is `0` (deny client-provided arguments), `1` (allow), or `2` (require the configured command line). For Agent-managed RemoteApps the broker mirrors this policy into Guacamole tokens: setting `0` emits no RemoteApp arguments, setting `1` uses `remote_app_args`, and setting `2` forces `remote_app_required_command_line`.
 
 ## Director/history
 
@@ -128,6 +147,8 @@ Resource fields include desktop/RemoteApp kind, farm ID, Guacamole connection ID
 
 ## Agent protocol
 
-`model.ProtocolVersion` is `3` for v0.3.
+`model.ProtocolVersion` is `4` for v0.4. Master and Agent must use the same protocol version.
 
-Heartbeat snapshots contain server/health/session/process/telemetry/profile/event state. The response contains effective desired policy and pending commands. Agents acknowledge completed commands in later heartbeats.
+Heartbeat snapshots contain server/health/session/process/telemetry/profile/event state plus `remote_apps`. Each RemoteApp status can report `resource_id`, `alias`, `path`, `path_exists`, `published`, `managed`, `in_sync` and `error`.
+
+Heartbeat responses contain effective desired policy, pending commands and `desired_remote_apps`. The latter is intentionally always present (including an empty array) so an Agent can safely remove SessionGuard-owned registrations that are no longer desired. Agents acknowledge completed commands in later heartbeats.

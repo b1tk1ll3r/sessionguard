@@ -139,3 +139,90 @@ func TestDomainQualifiedBrokerIdentityDoesNotCrossDomain(t *testing.T) {
 		t.Fatal("matching domain-qualified identity did not match")
 	}
 }
+
+func TestManagedRemoteAppOnlyUsesReadyHost(t *testing.T) {
+	a := brokerTestApp()
+	a.store.data.Resources["sage"] = model.Resource{
+		ID: "sage", Name: "Sage", Kind: "remoteapp", FarmID: "office", Enabled: true,
+		RemoteApp: "||Sage", ManageRemoteApp: true, RemoteAppPath: `C:\\Program Files\\Sage\\Sage.exe`,
+	}
+	notReady := testAgent("rds01", "rds01.example.test", "online", 100)
+	notReady.Snapshot.RemoteApps = []model.RemoteAppStatus{{
+		ResourceID: "sage", Alias: "Sage", Published: true, PathExists: false, Managed: true, InSync: false,
+	}}
+	ready := testAgent("rds02", "rds02.example.test", "online", 80)
+	ready.Snapshot.RemoteApps = []model.RemoteAppStatus{{
+		ResourceID: "sage", Alias: "Sage", Published: true, PathExists: true, Managed: true, InSync: true,
+	}}
+	a.store.data.Agents["rds01"] = notReady
+	a.store.data.Agents["rds02"] = ready
+
+	got, err := a.resolveBroker(model.BrokerRequest{Username: `EXAMPLE\\Max`, ResourceID: "sage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentID != "rds02" {
+		t.Fatalf("managed RemoteApp was brokered to a host that is not ready: %+v", got)
+	}
+}
+
+func TestManagedRemoteAppFailsClosedWithoutReadyHost(t *testing.T) {
+	a := brokerTestApp()
+	a.store.data.Resources["sage"] = model.Resource{
+		ID: "sage", Name: "Sage", Kind: "remoteapp", FarmID: "office", Enabled: true,
+		RemoteApp: "||Sage", ManageRemoteApp: true, RemoteAppPath: `C:\\Program Files\\Sage\\Sage.exe`,
+	}
+	rec := testAgent("rds01", "rds01.example.test", "online", 100)
+	rec.Snapshot.RemoteApps = []model.RemoteAppStatus{{
+		ResourceID: "sage", Alias: "Sage", Published: false, PathExists: true, Managed: true, InSync: false,
+		Error: "RemoteApp provider did not return the registration after Put()",
+	}}
+	a.store.data.Agents["rds01"] = rec
+
+	if _, err := a.resolveBroker(model.BrokerRequest{Username: `EXAMPLE\\Max`, ResourceID: "sage"}); err == nil {
+		t.Fatal("managed RemoteApp without a ready host must fail closed")
+	}
+}
+
+func TestDesiredRemoteAppsAreScopedToAgentFarmAndNormalized(t *testing.T) {
+	a := brokerTestApp()
+	a.store.data.Farms["erp"] = model.Farm{ID: "erp", Name: "ERP", Enabled: true}
+	a.store.data.Resources["office-app"] = model.Resource{
+		ID: "office-app", Name: "Office App", Kind: "remoteapp", FarmID: "office", Enabled: true,
+		RemoteApp: "||OfficeApp", ManageRemoteApp: true, RemoteAppPath: `C:\\Apps\\Office.exe`,
+		RemoteAppCommandLine: 2, RemoteAppRequiredArgs: "/sessionguard", RemoteAppShowInPortal: true,
+	}
+	a.store.data.Resources["erp-app"] = model.Resource{
+		ID: "erp-app", Name: "ERP App", Kind: "remoteapp", FarmID: "erp", Enabled: true,
+		RemoteApp: "||ERP", ManageRemoteApp: true, RemoteAppPath: `C:\\Apps\\ERP.exe`,
+	}
+	rec := testAgent("rds01", "rds01.example.test", "online", 100)
+
+	got := a.desiredRemoteAppsLocked("rds01", rec)
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one farm-scoped desired RemoteApp, got %#v", got)
+	}
+	if got[0].Alias != "OfficeApp" || got[0].ResourceID != "office-app" || got[0].CommandLineSetting != 2 || got[0].RequiredCommandLine != "/sessionguard" {
+		t.Fatalf("unexpected desired RemoteApp: %+v", got[0])
+	}
+}
+
+func TestManagedRemoteAppCommandLinePolicyControlsBrokerArgs(t *testing.T) {
+	rec := testAgent("rds01", "rds01.example.test", "online", 100)
+	lease := model.UserLease{ExpiresAt: time.Now().Add(time.Minute)}
+
+	deny := model.Resource{ID: "deny", Kind: "remoteapp", RemoteApp: "||App", ManageRemoteApp: true, RemoteAppCommandLine: 0, RemoteAppArgs: "--from-guac"}
+	if got := brokerResponse(rec, "office", &deny, false, "test", lease).Tokens["SESSIONGUARD_REMOTE_APP_ARGS"]; got != "" {
+		t.Fatalf("deny policy leaked Guacamole args: %q", got)
+	}
+
+	allow := model.Resource{ID: "allow", Kind: "remoteapp", RemoteApp: "||App", ManageRemoteApp: true, RemoteAppCommandLine: 1, RemoteAppArgs: "--from-guac"}
+	if got := brokerResponse(rec, "office", &allow, false, "test", lease).Tokens["SESSIONGUARD_REMOTE_APP_ARGS"]; got != "--from-guac" {
+		t.Fatalf("allow policy did not preserve Guacamole args: %q", got)
+	}
+
+	require := model.Resource{ID: "require", Kind: "remoteapp", RemoteApp: "||App", ManageRemoteApp: true, RemoteAppCommandLine: 2, RemoteAppArgs: "--wrong", RemoteAppRequiredArgs: "--required"}
+	if got := brokerResponse(rec, "office", &require, false, "test", lease).Tokens["SESSIONGUARD_REMOTE_APP_ARGS"]; got != "--required" {
+		t.Fatalf("required policy did not force desired args: %q", got)
+	}
+}

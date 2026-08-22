@@ -25,7 +25,7 @@ import (
 	"github.com/example/sessionguard/internal/windowsx"
 )
 
-const Version = "0.3.3"
+const Version = "0.4.0"
 
 type App struct {
 	cfg          config.Agent
@@ -85,6 +85,11 @@ func (a *App) worker(ctx context.Context) {
 	defer poll.Stop()
 	hb := time.NewTicker(time.Duration(max(3, a.cfg.HeartbeatSeconds)) * time.Second)
 	defer hb.Stop()
+	remoteApps := time.NewTicker(60 * time.Second)
+	defer remoteApps.Stop()
+	if a.remoteAppReconcileNeeded() {
+		a.syncRemoteApps()
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -103,8 +108,18 @@ func (a *App) worker(ctx context.Context) {
 			poll.Reset(time.Duration(max(2, a.policy().Cleanup.PollSeconds)) * time.Second)
 		case <-hb.C:
 			a.sendHeartbeat(ctx)
+		case <-remoteApps.C:
+			if a.remoteAppReconcileNeeded() {
+				a.syncRemoteApps()
+			}
 		}
 	}
+}
+
+func (a *App) remoteAppReconcileNeeded() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.state.DesiredRemoteApps) > 0 || len(a.state.ManagedRemoteApps) > 0
 }
 
 func (a *App) tick(ctx context.Context) {
@@ -850,7 +865,7 @@ func (a *App) refreshSnapshot(server model.ServerInfo, sessions []model.Session,
 	for id, t := range a.state.Telemetry {
 		telemetry[id] = t
 	}
-	a.snapshot = model.AgentSnapshot{ProtocolVersion: model.ProtocolVersion, AgentID: a.state.AgentID, Server: server, Health: health, Sessions: sessions, Processes: processes, Telemetry: telemetry, PendingCleanup: pendingSlice(a.state.Pending), ProfileJobs: profileJobSlice(a.state.ProfileJobs), ProfileStatus: cloneProfileStatus(a.state.ProfileStatus), Events: eventSlice(a.state.Events), CommandResults: resultSlice(a.state.CommandResults), Policy: a.state.Policy, PolicyRevision: a.state.Policy.Revision, AgentVersion: Version, Time: now}
+	a.snapshot = model.AgentSnapshot{ProtocolVersion: model.ProtocolVersion, AgentID: a.state.AgentID, Server: server, Health: health, Sessions: sessions, Processes: processes, Telemetry: telemetry, PendingCleanup: pendingSlice(a.state.Pending), ProfileJobs: profileJobSlice(a.state.ProfileJobs), ProfileStatus: cloneProfileStatus(a.state.ProfileStatus), Events: eventSlice(a.state.Events), CommandResults: resultSlice(a.state.CommandResults), RemoteApps: append([]model.RemoteAppStatus(nil), a.state.RemoteAppStatus...), Policy: a.state.Policy, PolicyRevision: a.state.Policy.Revision, AgentVersion: Version, Time: now}
 }
 
 func (a *App) calculateHealth(server model.ServerInfo) model.HealthStatus {
@@ -936,6 +951,12 @@ func (a *App) sendHeartbeat(ctx context.Context) {
 			a.appendEventLocked("info", "policy_applied", "", fmt.Sprintf("Master-Policy %s angewendet", p.Revision))
 		}
 	}
+	remoteAppsChanged := !remoteAppSpecsEqual(a.state.DesiredRemoteApps, resp.DesiredRemoteApps)
+	if remoteAppsChanged {
+		a.state.DesiredRemoteApps = append([]model.RemoteAppSpec(nil), resp.DesiredRemoteApps...)
+		a.appendEventLocked("info", "remoteapp_desired_state", "", fmt.Sprintf("RemoteApp-Sollzustand aktualisiert: %d Apps", len(resp.DesiredRemoteApps)))
+	}
+	remoteAppSyncDue := remoteAppsChanged || a.state.LastRemoteAppSync.IsZero() || time.Since(a.state.LastRemoteAppSync) >= 60*time.Second
 	_ = a.store.save(a.state)
 	current := make([]model.Session, 0, len(a.state.LastSessions))
 	if changed {
@@ -944,6 +965,9 @@ func (a *App) sendHeartbeat(ctx context.Context) {
 		}
 	}
 	a.mu.Unlock()
+	if remoteAppSyncDue {
+		a.syncRemoteApps()
+	}
 	if changed {
 		for _, s := range current {
 			if s.SID != "" && s.User != "" {
@@ -952,6 +976,105 @@ func (a *App) sendHeartbeat(ctx context.Context) {
 		}
 	}
 	a.processCommands(resp.Commands)
+}
+
+func remoteAppSpecsEqual(a, b []model.RemoteAppSpec) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *App) syncRemoteApps() {
+	a.mu.RLock()
+	desired := append([]model.RemoteAppSpec(nil), a.state.DesiredRemoteApps...)
+	previous := make(map[string]model.RemoteAppSpec, len(a.state.ManagedRemoteApps))
+	for alias, spec := range a.state.ManagedRemoteApps {
+		previous[alias] = spec
+	}
+	owned := make(map[string]bool, len(a.state.OwnedRemoteAppAliases))
+	for alias, isOwned := range a.state.OwnedRemoteAppAliases {
+		if isOwned {
+			owned[strings.ToLower(alias)] = true
+		}
+	}
+	a.mu.RUnlock()
+
+	wanted := make(map[string]model.RemoteAppSpec, len(desired))
+	for _, spec := range desired {
+		wanted[strings.ToLower(spec.Alias)] = spec
+	}
+	remove := make([]string, 0)
+	for alias := range previous {
+		key := strings.ToLower(alias)
+		if _, ok := wanted[key]; !ok && owned[key] {
+			remove = append(remove, alias)
+		}
+	}
+	sort.Strings(remove)
+
+	managedStatus, reconcileErr := windowsx.ReconcileRemoteApps(desired, remove)
+	if reconcileErr == nil {
+		for _, st := range managedStatus {
+			if st.Owned {
+				owned[strings.ToLower(st.Alias)] = true
+			}
+		}
+		for _, alias := range remove {
+			delete(owned, strings.ToLower(alias))
+		}
+	}
+	discovered, discoverErr := windowsx.DiscoverRemoteApps()
+	status := managedStatus
+	if discoverErr == nil {
+		status = windowsx.RemoteAppStatusByDesired(discovered, desired)
+		managedErrors := map[string]string{}
+		for _, st := range managedStatus {
+			if st.Error != "" {
+				managedErrors[strings.ToLower(st.Alias)] = st.Error
+			}
+		}
+		for i := range status {
+			key := strings.ToLower(status[i].Alias)
+			status[i].Owned = owned[key]
+			if errText := managedErrors[key]; errText != "" {
+				status[i].Error = errText
+				status[i].InSync = false
+			}
+		}
+	}
+	now := time.Now().UTC()
+	a.mu.Lock()
+	a.state.LastRemoteAppSync = now
+	if reconcileErr != nil {
+		a.appendEventLocked("error", "remoteapp_reconcile_error", "", reconcileErr.Error())
+	}
+	if discoverErr != nil {
+		a.appendEventLocked("error", "remoteapp_discovery_error", "", discoverErr.Error())
+	}
+	if reconcileErr == nil {
+		a.state.ManagedRemoteApps = map[string]model.RemoteAppSpec{}
+		for _, spec := range desired {
+			a.state.ManagedRemoteApps[spec.Alias] = spec
+		}
+		a.state.OwnedRemoteAppAliases = map[string]bool{}
+		for alias, isOwned := range owned {
+			if isOwned {
+				a.state.OwnedRemoteAppAliases[alias] = true
+			}
+		}
+	}
+	if status != nil {
+		a.state.RemoteAppStatus = status
+		a.snapshot.RemoteApps = append([]model.RemoteAppStatus(nil), status...)
+	}
+	_ = a.store.save(a.state)
+	a.mu.Unlock()
 }
 
 func (a *App) serveHTTP(ctx context.Context) error {

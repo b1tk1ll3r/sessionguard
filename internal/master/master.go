@@ -23,7 +23,7 @@ import (
 	"github.com/example/sessionguard/internal/model"
 )
 
-const Version = "0.3.3"
+const Version = "0.4.0"
 
 type App struct {
 	cfg   config.Master
@@ -224,6 +224,7 @@ func (a *App) heartbeat(w http.ResponseWriter, r *http.Request) {
 		cp := *desired
 		sendPolicy = &cp
 	}
+	desiredRemoteApps := a.desiredRemoteAppsLocked(id, rec)
 	commands := append([]model.SessionCommand(nil), rec.PendingCommands...)
 	if err := a.store.saveLocked(); err != nil {
 		a.store.mu.Unlock()
@@ -234,7 +235,7 @@ func (a *App) heartbeat(w http.ResponseWriter, r *http.Request) {
 	for _, al := range notify {
 		a.notifyAlert(al)
 	}
-	httpx.JSON(w, 200, model.HeartbeatResponse{DesiredPolicy: sendPolicy, Commands: commands, ServerTime: now})
+	httpx.JSON(w, 200, model.HeartbeatResponse{DesiredPolicy: sendPolicy, DesiredRemoteApps: desiredRemoteApps, Commands: commands, ServerTime: now})
 }
 
 func (a *App) recordSessionHistoryLocked(rec model.AgentRecord, old, new model.AgentSnapshot, now time.Time) {
@@ -446,7 +447,7 @@ func (a *App) resolveBroker(req model.BrokerRequest) (model.BrokerResponse, erro
 	// Maintenance hosts are never selected. This provides Citrix-like reconnect affinity.
 	if a.cfg.Broker.ReconnectExisting {
 		for id, rec := range a.store.data.Agents {
-			if rec.MaintenanceMode == "maintenance" || !agentOnline(rec, now, a.cfg.OfflineAfterSeconds) || !a.agentInFarmLocked(id, rec, farmID) {
+			if rec.MaintenanceMode == "maintenance" || !agentOnline(rec, now, a.cfg.OfflineAfterSeconds) || !a.agentInFarmLocked(id, rec, farmID) || !agentResourceReady(rec, resource) {
 				continue
 			}
 			for _, sess := range rec.Snapshot.Sessions {
@@ -461,7 +462,7 @@ func (a *App) resolveBroker(req model.BrokerRequest) (model.BrokerResponse, erro
 		}
 	}
 	if lease, ok := a.store.data.Leases[leaseKey]; ok && now.Before(lease.ExpiresAt) {
-		if rec, found := a.store.data.Agents[lease.AgentID]; found && rec.MaintenanceMode != "maintenance" && agentOnline(rec, now, a.cfg.OfflineAfterSeconds) && a.agentInFarmLocked(lease.AgentID, rec, farmID) {
+		if rec, found := a.store.data.Agents[lease.AgentID]; found && rec.MaintenanceMode != "maintenance" && agentOnline(rec, now, a.cfg.OfflineAfterSeconds) && a.agentInFarmLocked(lease.AgentID, rec, farmID) && agentResourceReady(rec, resource) {
 			lease.ExpiresAt = now.Add(time.Duration(a.cfg.Broker.LeaseSeconds) * time.Second)
 			a.store.data.Leases[leaseKey] = lease
 			if err := a.store.saveLocked(); err != nil {
@@ -470,7 +471,7 @@ func (a *App) resolveBroker(req model.BrokerRequest) (model.BrokerResponse, erro
 			return brokerResponse(rec, farmID, resource, true, "existing-lease", lease), nil
 		}
 	}
-	candidates := a.farmCandidatesLocked(farmID, now)
+	candidates := a.farmCandidatesLocked(farmID, resource, now)
 	if len(candidates) == 0 {
 		return model.BrokerResponse{}, fmt.Errorf("no healthy online server is available for farm %q", farmID)
 	}
@@ -513,7 +514,7 @@ func (a *App) agentInFarmLocked(id string, rec model.AgentRecord, farmID string)
 	return len(f.RequiredTags) > 0 && tagsMatch(rec.Tags, f.RequiredTags)
 }
 
-func (a *App) farmCandidatesLocked(farmID string, now time.Time) []model.AgentRecord {
+func (a *App) farmCandidatesLocked(farmID string, resource *model.Resource, now time.Time) []model.AgentRecord {
 	if farmID != "" {
 		if f, ok := a.store.data.Farms[farmID]; !ok || !f.Enabled {
 			return nil
@@ -525,6 +526,9 @@ func (a *App) farmCandidatesLocked(farmID string, now time.Time) []model.AgentRe
 			continue
 		}
 		if !a.agentInFarmLocked(id, rec, farmID) {
+			continue
+		}
+		if !agentResourceReady(rec, resource) {
 			continue
 		}
 		out = append(out, rec)
@@ -546,7 +550,16 @@ func brokerResponse(rec model.AgentRecord, farm string, res *model.Resource, rec
 		tokens["SESSIONGUARD_RESOURCE_ID"] = res.ID
 		tokens["SESSIONGUARD_REMOTE_APP"] = res.RemoteApp
 		tokens["SESSIONGUARD_REMOTE_APP_DIR"] = res.RemoteAppDir
-		tokens["SESSIONGUARD_REMOTE_APP_ARGS"] = res.RemoteAppArgs
+		remoteArgs := res.RemoteAppArgs
+		if res.Kind == "remoteapp" && res.ManageRemoteApp {
+			switch res.RemoteAppCommandLine {
+			case 0:
+				remoteArgs = ""
+			case 2:
+				remoteArgs = res.RemoteAppRequiredArgs
+			}
+		}
+		tokens["SESSIONGUARD_REMOTE_APP_ARGS"] = remoteArgs
 	}
 	return model.BrokerResponse{AgentID: rec.ID, Hostname: rec.Snapshot.Server.Hostname, FarmID: farm, ResourceID: rid, Reconnect: reconnect, Reason: reason, HealthScore: rec.Snapshot.Health.Score, Tokens: tokens, LeaseExpires: lease.ExpiresAt}
 }
@@ -1138,6 +1151,34 @@ func (a *App) saveResource(w http.ResponseWriter, r *http.Request, x model.Resou
 		httpx.Error(w, 400, "remote_app is required for remoteapp resources")
 		return
 	}
+	if x.Kind == "desktop" {
+		x.RemoteApp = ""
+		x.RemoteAppDir = ""
+		x.RemoteAppArgs = ""
+		x.ManageRemoteApp = false
+		x.RemoteAppPath = ""
+		x.RemoteAppIconPath = ""
+		x.RemoteAppIconIndex = 0
+		x.RemoteAppCommandLine = 0
+		x.RemoteAppRequiredArgs = ""
+		x.RemoteAppShowInPortal = false
+	}
+	if x.Kind == "remoteapp" {
+		alias := remoteAppAlias(x.RemoteApp)
+		if !validRemoteAppAlias(alias) {
+			httpx.Error(w, 400, "remote_app alias must contain only letters, numbers, dot, dash or underscore")
+			return
+		}
+		x.RemoteApp = "||" + alias
+		if x.ManageRemoteApp && strings.TrimSpace(x.RemoteAppPath) == "" {
+			httpx.Error(w, 400, "remote_app_path is required when agent RemoteApp management is enabled")
+			return
+		}
+		if x.RemoteAppCommandLine > 2 {
+			httpx.Error(w, 400, "remote_app_command_line_setting must be 0, 1 or 2")
+			return
+		}
+	}
 	a.store.mu.Lock()
 	defer a.store.mu.Unlock()
 	if _, ok := a.store.data.Farms[x.FarmID]; !ok {
@@ -1160,6 +1201,10 @@ func (a *App) saveResource(w http.ResponseWriter, r *http.Request, x model.Resou
 			}
 			if x.GuacamoleConnectionName != "" && strings.EqualFold(existing.GuacamoleConnectionName, x.GuacamoleConnectionName) {
 				httpx.Error(w, 409, "guacamole_connection_name is already mapped by another enabled resource")
+				return
+			}
+			if x.Kind == "remoteapp" && x.ManageRemoteApp && existing.Kind == "remoteapp" && existing.ManageRemoteApp && strings.EqualFold(remoteAppAlias(existing.RemoteApp), remoteAppAlias(x.RemoteApp)) {
+				httpx.Error(w, 409, "managed remote_app alias is already used by another enabled resource")
 				return
 			}
 		}
@@ -1614,6 +1659,67 @@ func tagsMatch(have, need map[string]string) bool {
 	}
 	return true
 }
+func remoteAppAlias(remoteApp string) string {
+	v := strings.TrimSpace(remoteApp)
+	v = strings.TrimPrefix(v, "||")
+	return strings.TrimSpace(v)
+}
+
+func validRemoteAppAlias(alias string) bool {
+	if alias == "" || len(alias) > 128 {
+		return false
+	}
+	for _, r := range alias {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (a *App) desiredRemoteAppsLocked(agentID string, rec model.AgentRecord) []model.RemoteAppSpec {
+	out := make([]model.RemoteAppSpec, 0)
+	for _, res := range a.store.data.Resources {
+		if !res.Enabled || res.Kind != "remoteapp" || !res.ManageRemoteApp || strings.TrimSpace(res.RemoteAppPath) == "" {
+			continue
+		}
+		if !a.agentInFarmLocked(agentID, rec, res.FarmID) {
+			continue
+		}
+		alias := remoteAppAlias(res.RemoteApp)
+		if !validRemoteAppAlias(alias) {
+			continue
+		}
+		out = append(out, model.RemoteAppSpec{
+			ResourceID: res.ID, Alias: alias, DisplayName: res.Name, Path: res.RemoteAppPath,
+			IconPath: res.RemoteAppIconPath, IconIndex: res.RemoteAppIconIndex,
+			CommandLineSetting: res.RemoteAppCommandLine, RequiredCommandLine: res.RemoteAppRequiredArgs,
+			ShowInPortal: res.RemoteAppShowInPortal,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if strings.EqualFold(out[i].Alias, out[j].Alias) {
+			return out[i].ResourceID < out[j].ResourceID
+		}
+		return strings.ToLower(out[i].Alias) < strings.ToLower(out[j].Alias)
+	})
+	return out
+}
+
+func agentResourceReady(rec model.AgentRecord, res *model.Resource) bool {
+	if res == nil || res.Kind != "remoteapp" || !res.ManageRemoteApp {
+		return true
+	}
+	alias := remoteAppAlias(res.RemoteApp)
+	for _, st := range rec.Snapshot.RemoteApps {
+		if st.ResourceID == res.ID || (st.ResourceID == "" && strings.EqualFold(st.Alias, alias)) {
+			return st.Published && st.PathExists && st.InSync && strings.TrimSpace(st.Error) == ""
+		}
+	}
+	return false
+}
+
 func resourceID(r *model.Resource) string {
 	if r == nil {
 		return ""

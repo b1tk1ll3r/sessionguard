@@ -350,16 +350,16 @@ git describe --tags --always | sed 's/^v//'
 Für einen sauberen Release:
 
 ```bash
-git tag v0.3.1
-git push origin v0.3.1
+git tag v0.4.0
+git push origin v0.4.0
 git push origin main
 ```
 
-Ein Commit exakt auf Tag `v0.3.1` erzeugt dann:
+Ein Commit exakt auf Tag `v0.4.0` erzeugt dann:
 
 ```text
-git.send.nrw/sendnrw/sessionguard:0.3.1
-git.send.nrw/sendnrw/sessionguard-guacamole:0.3.1
+git.send.nrw/sendnrw/sessionguard:0.4.0
+git.send.nrw/sendnrw/sessionguard-guacamole:0.4.0
 ```
 
 `latest` wird ebenfalls aktualisiert.
@@ -367,8 +367,8 @@ git.send.nrw/sendnrw/sessionguard-guacamole:0.3.1
 ### 7.3 Release prüfen
 
 ```bash
-docker pull git.send.nrw/sendnrw/sessionguard:0.3.1
-docker pull git.send.nrw/sendnrw/sessionguard-guacamole:0.3.1
+docker pull git.send.nrw/sendnrw/sessionguard:0.4.0
+docker pull git.send.nrw/sendnrw/sessionguard-guacamole:0.4.0
 ```
 
 Für Produktion möglichst einen festen Versions-Tag und nicht ausschließlich `latest` verwenden.
@@ -402,7 +402,7 @@ Anlegen:
 Beispiel:
 
 ```dotenv
-SESSIONGUARD_VERSION=0.3.1
+SESSIONGUARD_VERSION=0.4.0
 POSTGRES_VERSION=17
 
 TRAEFIK_NETWORK=aio_proxy
@@ -655,7 +655,7 @@ image: guacamole/guacamole:${GUACAMOLE_VERSION:-1.6.0}
 Nachher:
 
 ```yaml
-image: git.send.nrw/sendnrw/sessionguard-guacamole:${SESSIONGUARD_VERSION:-0.3.1}
+image: git.send.nrw/sendnrw/sessionguard-guacamole:${SESSIONGUARD_VERSION:-0.4.0}
 ```
 
 `guac-init` kann weiterhin das offizielle Guacamole-Image verwenden.
@@ -675,7 +675,7 @@ SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
 In die Guacamole `.env` zusätzlich:
 
 ```dotenv
-SESSIONGUARD_VERSION=0.3.1
+SESSIONGUARD_VERSION=0.4.0
 SESSIONGUARD_BROKER_API_KEY=<EXAKT_DERSELBE_BROKER_API_KEY_WIE_AM_MASTER>
 ```
 
@@ -1909,7 +1909,7 @@ Vorher PostgreSQL sichern.
 Dann neuen Tag setzen, beispielsweise:
 
 ```dotenv
-SESSIONGUARD_VERSION=0.3.1
+SESSIONGUARD_VERSION=0.4.0
 ```
 
 Update:
@@ -1942,7 +1942,7 @@ Broker
 Gleichen SessionGuard-Release-Tag verwenden:
 
 ```dotenv
-SESSIONGUARD_VERSION=0.3.1
+SESSIONGUARD_VERSION=0.4.0
 ```
 
 Dann:
@@ -2299,3 +2299,37 @@ docs/TESTING.md
 ```
 
 Diese Anleitung sollte zusammen mit `docs/TESTING.md` als Go-Live-Grundlage verwendet werden.
+
+## SessionGuard-managed RemoteApps (v0.4)
+
+This mode is intended for RD Session Hosts where you want SessionGuard Agents to maintain the local RemoteApp allow-list instead of manually publishing the same alias on every farm member. It uses the documented Terminal Services WMI provider in `root\CIMv2\TerminalServices`. Administrator rights are required for changes; the normal SessionGuard Windows service account must therefore retain its existing local system/administrative privileges.
+
+Before enabling it for a production farm, verify the provider on a canary RDS host:
+
+```powershell
+Get-WmiObject `
+  -Namespace 'root\cimv2\TerminalServices' `
+  -Class Win32_TSPublishedApplication `
+  -Authentication PacketPrivacy |
+  Select-Object Alias,Path,PathExists,CommandLineSetting
+```
+
+An empty result is valid when no RemoteApps are published. A class/provider error means this SessionGuard mode should not be enabled on that host until the Windows RDS installation is corrected.
+
+In **Master → Apps & Desktops**, create/edit a Resource:
+
+```text
+Type:                         RemoteApp
+Farm:                         <target farm>
+RemoteApp Alias:              ||Sage
+Agent-managed publication:    enabled
+Executable:                   C:\Program Files\Sage\Sage.exe
+Command-line policy:          deny / allow / require
+```
+
+The executable must exist at the configured path on each eligible farm member. The Agent reconciles on desired-state changes and periodically thereafter. The Master UI shows per-host readiness. A managed RemoteApp remains unavailable on any host that has not yet reported a healthy synchronized registration.
+
+SessionGuard only removes aliases that the same Agent originally created and recorded as owned. Existing manually published RemoteApps are discovered and can be adopted for desired-state checks, but are not deleted when management is later disabled. Canary-test this behavior on the exact Windows Server version used in your environment.
+
+Because v0.4 changes the heartbeat protocol to version 4, upgrade Master and Agents as one coordinated rollout. A v0.3 Agent will be rejected by a v0.4 Master with a protocol-version mismatch until upgraded.
+

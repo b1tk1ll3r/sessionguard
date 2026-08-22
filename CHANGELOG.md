@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0 — Agent-managed RemoteApps
+
+- Added a farm-scoped RemoteApp desired-state model to Published Resources.
+- Windows Agent discovers RemoteApps through `root\CIMv2\TerminalServices` / `Win32_TSPublishedApplication`.
+- Optional Agent-managed publication creates/updates aliases, executable/icon settings and command-line policy through the Terminal Services WMI provider.
+- Reconciliation deletes only aliases originally created by SessionGuard; pre-existing/manual RemoteApps remain in place if management is later disabled.
+- Agent heartbeat reports per-app executable, publication, ownership, sync and error state.
+- Managed RemoteApps are brokered fail-closed per host until the Agent reports `published + path_exists + in_sync`.
+- Master WebUI now exposes application path, alias, icon, command-line policy and per-farm readiness.
+- Agent WebUI now includes a RemoteApps inventory/status view.
+- Protocol version increased from 3 to 4; Master and Agent must be upgraded together.
+- No Node.js/npm/frontend framework or build step introduced.
+
 ## 0.3.4 — Modern Web UI
 
 - Master- und Agent-WebUI vollständig modernisiert, weiterhin ohne Framework oder Build-Schritt.

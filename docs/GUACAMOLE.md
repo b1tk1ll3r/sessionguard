@@ -52,7 +52,9 @@ remote-app-dir:  ${SESSIONGUARD_REMOTE_APP_DIR}
 remote-app-args: ${SESSIONGUARD_REMOTE_APP_ARGS}
 ```
 
-Create a matching Published Resource in SessionGuard by Guacamole connection ID or name.
+If your Agents report short Windows computer names and your DNS requires a suffix, a Guacamole hostname such as `${SESSIONGUARD_HOST}.example.org` is valid.
+
+Create a matching Published Resource in SessionGuard by Guacamole connection ID or name. In v0.4 the Resource can optionally enable **Agent-managed RemoteApp publication** and specify the executable path. The Master then distributes the desired alias/path to every Agent in the farm. A managed RemoteApp is not brokered to a host until the Agent reports that it is present and in sync. The broker also aligns `${SESSIONGUARD_REMOTE_APP_ARGS}` with the Windows command-line policy (deny/allow/require).
 
 ## Header-auth security boundary
 

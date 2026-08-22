@@ -13,20 +13,25 @@ import (
 )
 
 type State struct {
-	AgentID             string                            `json:"agent_id,omitempty"`
-	AgentToken          string                            `json:"agent_token,omitempty"`
-	Policy              model.Policy                      `json:"policy"`
-	LastSessions        map[uint32]model.Session          `json:"last_sessions,omitempty"`
-	Pending             map[string]model.CleanupJob       `json:"pending,omitempty"`
-	ProfileJobs         map[string]model.ProfileJob       `json:"profile_jobs,omitempty"`
-	ProfileStatus       map[string]model.ProfileStatus    `json:"profile_status,omitempty"`
-	DisconnectedSince   map[uint32]time.Time              `json:"disconnected_since,omitempty"`
-	AutoLogoffRequested map[uint32]time.Time              `json:"auto_logoff_requested,omitempty"`
-	RestoredSessions    map[uint32]bool                   `json:"restored_sessions,omitempty"`
-	ProcessedCommands   map[string]time.Time              `json:"processed_commands,omitempty"`
-	CommandResults      []model.CommandResult             `json:"command_results,omitempty"`
-	Events              []model.AgentEvent                `json:"events,omitempty"`
-	Telemetry           map[uint32]model.SessionTelemetry `json:"telemetry,omitempty"`
+	AgentID               string                            `json:"agent_id,omitempty"`
+	AgentToken            string                            `json:"agent_token,omitempty"`
+	Policy                model.Policy                      `json:"policy"`
+	LastSessions          map[uint32]model.Session          `json:"last_sessions,omitempty"`
+	Pending               map[string]model.CleanupJob       `json:"pending,omitempty"`
+	ProfileJobs           map[string]model.ProfileJob       `json:"profile_jobs,omitempty"`
+	ProfileStatus         map[string]model.ProfileStatus    `json:"profile_status,omitempty"`
+	DisconnectedSince     map[uint32]time.Time              `json:"disconnected_since,omitempty"`
+	AutoLogoffRequested   map[uint32]time.Time              `json:"auto_logoff_requested,omitempty"`
+	RestoredSessions      map[uint32]bool                   `json:"restored_sessions,omitempty"`
+	ProcessedCommands     map[string]time.Time              `json:"processed_commands,omitempty"`
+	CommandResults        []model.CommandResult             `json:"command_results,omitempty"`
+	Events                []model.AgentEvent                `json:"events,omitempty"`
+	Telemetry             map[uint32]model.SessionTelemetry `json:"telemetry,omitempty"`
+	DesiredRemoteApps     []model.RemoteAppSpec             `json:"desired_remote_apps,omitempty"`
+	ManagedRemoteApps     map[string]model.RemoteAppSpec    `json:"managed_remote_apps,omitempty"`
+	OwnedRemoteAppAliases map[string]bool                   `json:"owned_remote_app_aliases,omitempty"`
+	RemoteAppStatus       []model.RemoteAppStatus           `json:"remote_app_status,omitempty"`
+	LastRemoteAppSync     time.Time                         `json:"last_remote_app_sync,omitempty"`
 }
 
 type stateStore struct {
@@ -36,18 +41,22 @@ type stateStore struct {
 
 func loadState(path string, initial model.Policy) (State, error) {
 	s := State{
-		Policy:              initial,
-		LastSessions:        map[uint32]model.Session{},
-		Pending:             map[string]model.CleanupJob{},
-		ProfileJobs:         map[string]model.ProfileJob{},
-		ProfileStatus:       map[string]model.ProfileStatus{},
-		DisconnectedSince:   map[uint32]time.Time{},
-		AutoLogoffRequested: map[uint32]time.Time{},
-		RestoredSessions:    map[uint32]bool{},
-		ProcessedCommands:   map[string]time.Time{},
-		CommandResults:      []model.CommandResult{},
-		Events:              []model.AgentEvent{},
-		Telemetry:           map[uint32]model.SessionTelemetry{},
+		Policy:                initial,
+		LastSessions:          map[uint32]model.Session{},
+		Pending:               map[string]model.CleanupJob{},
+		ProfileJobs:           map[string]model.ProfileJob{},
+		ProfileStatus:         map[string]model.ProfileStatus{},
+		DisconnectedSince:     map[uint32]time.Time{},
+		AutoLogoffRequested:   map[uint32]time.Time{},
+		RestoredSessions:      map[uint32]bool{},
+		ProcessedCommands:     map[string]time.Time{},
+		CommandResults:        []model.CommandResult{},
+		Events:                []model.AgentEvent{},
+		Telemetry:             map[uint32]model.SessionTelemetry{},
+		DesiredRemoteApps:     []model.RemoteAppSpec{},
+		ManagedRemoteApps:     map[string]model.RemoteAppSpec{},
+		OwnedRemoteAppAliases: map[string]bool{},
+		RemoteAppStatus:       []model.RemoteAppStatus{},
 	}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -88,6 +97,18 @@ func loadState(path string, initial model.Policy) (State, error) {
 	}
 	if s.Telemetry == nil {
 		s.Telemetry = map[uint32]model.SessionTelemetry{}
+	}
+	if s.DesiredRemoteApps == nil {
+		s.DesiredRemoteApps = []model.RemoteAppSpec{}
+	}
+	if s.ManagedRemoteApps == nil {
+		s.ManagedRemoteApps = map[string]model.RemoteAppSpec{}
+	}
+	if s.OwnedRemoteAppAliases == nil {
+		s.OwnedRemoteAppAliases = map[string]bool{}
+	}
+	if s.RemoteAppStatus == nil {
+		s.RemoteAppStatus = []model.RemoteAppStatus{}
 	}
 	if s.RestoredSessions == nil {
 		// Upgrade safety: do not restore into sessions that were already active before

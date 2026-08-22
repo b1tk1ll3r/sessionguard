@@ -1,4 +1,4 @@
-# SessionGuard 0.3 Architecture
+# SessionGuard 0.4 Architecture
 
 ## Purpose
 
@@ -9,7 +9,7 @@ SessionGuard separates the functions commonly bundled into a Citrix deployment i
 - **Apache Guacamole**: browser gateway and RDP transport.
 - **Windows RDS**: Windows session runtime.
 - **SessionGuard Master**: broker, Director, policy control plane, history, alerting and command queue.
-- **SessionGuard Agent**: Windows/RDS integration, profile lifecycle, templates, telemetry and local fallback administration.
+- **SessionGuard Agent**: Windows/RDS integration, profile lifecycle, templates, telemetry, local RemoteApp reconciliation and fallback administration.
 
 SessionGuard intentionally does not implement a new remote-display protocol.
 
@@ -76,6 +76,7 @@ Persistent agent state under `data_dir` contains:
 - profile status
 - bounded event history
 - bounded logon telemetry
+- desired/managed RemoteApp state and last observed RemoteApp inventory
 
 The service can therefore continue cleanup/profile/session policy during a master outage using the last accepted policy.
 
@@ -102,6 +103,29 @@ Broker selection is entirely master-side and never modifies the Guacamole databa
 A request contains the authenticated username plus Guacamole connection ID/name or an explicit SessionGuard resource/farm. The master resolves the resource and farm, then follows the placement algorithm documented in `BROKER.md`.
 
 The response contains tokens rather than Guacamole-specific mutable state. The extension injects them into the current user context immediately before the connection parameters are resolved.
+
+
+## RemoteApp desired-state model
+
+For a Resource with Agent-managed publication enabled, the Master derives a `RemoteAppSpec` for each member of the Resource farm and returns it in the normal outbound heartbeat response. No inbound WMI/WinRM connection from Master to the RDS host is introduced.
+
+```text
+Master Resource desired state
+        |
+        | heartbeat response
+        v
+Windows Agent
+        |
+        | local Terminal Services WMI provider
+        v
+Win32_TSPublishedApplication
+        |
+        | observed state in next snapshot
+        v
+Master / Broker readiness
+```
+
+The Agent discovers all local RemoteApps but mutates only explicitly desired SessionGuard resources. Deletion is limited to aliases recorded in Agent state as having been created by SessionGuard. For managed RemoteApps, the broker treats missing executable, missing publication, desired-state mismatch, or reconciliation errors as host-specific unavailability for that Resource.
 
 ## Policy hierarchy
 

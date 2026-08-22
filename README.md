@@ -2,9 +2,23 @@
 
 SessionGuard is a Go-based **RDS control plane** for Windows Remote Desktop Session Hosts. It is designed to complement Apache Guacamole: Guacamole remains the HTML5/RDP gateway, while SessionGuard provides Citrix-like broker, Director, policy, profile-lifecycle and operations functions.
 
-**Current development version: 0.3.4 (Broker & Director production candidate)**
+**Current development version: 0.4.0 (RemoteApp control plane)**
 
 > SessionGuard is not an ICA/HDX implementation and does not replace the Windows RDS runtime. It deliberately reuses standard RDP/WTS, Guacamole and PocketID/OIDC.
+
+## 0.4.0 RemoteApp control plane
+
+- The Master can define RemoteApp desired state per Published Resource/Farm.
+- Windows Agents discover the local `Win32_TSPublishedApplication` inventory through the documented Terminal Services WMI provider.
+- For resources with **Agent-managed RemoteApp publication** enabled, the Agent creates/updates the local RemoteApp registration and removes only aliases that the Agent itself originally created. Existing/manual RemoteApps may be adopted for desired-state checks but are never deleted merely because management is later disabled.
+- Executable presence, publication state and desired-state convergence are reported back in every Agent snapshot.
+- The broker fails closed per managed RemoteApp: a host is eligible only when that application is present, published and in sync. Desktop resources and unmanaged RemoteApps keep their previous placement behavior.
+- Master and Agent WebUIs show RemoteApp configuration/readiness without Node.js or a frontend build chain.
+- Agent protocol version is now `4`; upgrade Master and Agents together.
+
+> The local Terminal Services WMI provider is used instead of direct registry manipulation. This mode should be canary-tested on the exact Windows Server/RDSH versions in your environment; it does not claim to recreate every Microsoft Connection Broker/Collection management semantic.
+
+See `docs/REMOTEAPP.md` for the canary, ownership/rollback behavior and Guacamole mapping.
 
 ## 0.3.4 Modern Web UI
 
@@ -295,4 +309,4 @@ The current source tree contains unit tests for configuration, templates, profil
 
 ## Production-candidate status
 
-The design intentionally fails closed around destructive profile operations and broker farm boundaries. Nevertheless, v0.3.4 should be introduced as a canary before broad production rollout. In particular, validate native WTS behavior, SMB failure/recovery, PostgreSQL backup/restore, Guacamole extension loading and your exact PocketID group claims in your environment.
+The design intentionally fails closed around destructive profile operations and broker farm boundaries. Nevertheless, v0.4.0 should be introduced as a canary before broad production rollout. In particular, validate native WTS behavior, SMB failure/recovery, PostgreSQL backup/restore, Guacamole extension loading and your exact PocketID group claims in your environment.
