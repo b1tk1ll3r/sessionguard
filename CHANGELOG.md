@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.4 — Modern Web UI
+
+- Master- und Agent-WebUI vollständig modernisiert, weiterhin ohne Framework oder Build-Schritt.
+- Responsive Sidebar-Navigation mit Mobile-Menü und Scroll-Tracking.
+- Dark-/Light-Theme mit lokaler Browser-Präferenz.
+- Neue Dashboard-Karten, Panel-Hierarchie, Status-Badges, moderne Formulare/Switches und Tabellen.
+- Live-Bereiche und Editoren bleiben weiterhin getrennt; automatische Refreshes überschreiben keine Eingaben.
+- Verbesserte Darstellung für Farms, Broker, Published Resources, Director, Alerts, Audit und lokale Agent-Ansichten.
+- Keine neue Runtime-Abhängigkeit: HTML/CSS/Vanilla-JavaScript bleiben direkt in den Go-Binaries eingebettet.
+
 ## 0.3.3
 
 - Fix: Master-WebUI definiert und aktualisiert `agentCache`, bevor die Farm-Mitglieder berechnet werden.
