@@ -25,7 +25,7 @@ import (
 	"github.com/example/sessionguard/internal/windowsx"
 )
 
-const Version = "0.3.1"
+const Version = "0.3.3"
 
 type App struct {
 	cfg          config.Agent

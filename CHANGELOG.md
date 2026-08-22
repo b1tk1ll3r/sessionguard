@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- Fix: Master-WebUI definiert und aktualisiert `agentCache`, bevor die Farm-Mitglieder berechnet werden.
+- Behebt `ReferenceError: agentCache is not defined` in der Farm-/Broker-Ansicht.
+- Die Farm-Agent-Anzahl verwendet weiterhin dieselbe Membership-Logik wie der Broker (`farm.agent_ids`, `agent.farm_ids`, `required_tags`).
+
 ## 0.3.2
 
 - Fixed Farm member count in the Master WebUI. The table now uses the same membership rules as the broker: explicit `farm.agent_ids`, agent-side `agent.farm_ids`, and `required_tags`.
