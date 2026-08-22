@@ -23,7 +23,7 @@ import (
 	"github.com/example/sessionguard/internal/model"
 )
 
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 type App struct {
 	cfg   config.Master
@@ -58,6 +58,7 @@ func (a *App) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/v1/broker/tokens", a.brokerTokens)
 	mux.HandleFunc("GET /app.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store, max-age=0")
 		_, _ = fmt.Fprint(w, masterJS)
 	})
 	mux.Handle("GET /", a.auth.Require(http.HandlerFunc(a.masterPage)))
@@ -1481,6 +1482,7 @@ func requestActor(r *http.Request) string {
 
 func (a *App) masterPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	_, _ = fmt.Fprint(w, masterHTML)
 }
 func randomToken(n int) string {

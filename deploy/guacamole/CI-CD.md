@@ -48,9 +48,9 @@ Traefik labels unchanged.
 git describe --tags --always | sed 's/^v//'
 ```
 
-A commit tagged `v0.3.0` therefore publishes `0.3.0`; later commits are named
-like `0.3.0-1-g0123456` until the next tag.
+A commit tagged `v0.3.1` therefore publishes `0.3.1`; later commits are named
+like `0.3.1-1-g0123456` until the next tag.
 
-The extension Dockerfile no longer hardcodes `sessionguard-guacamole-0.3.0.jar`.
+The extension Dockerfile no longer hardcodes `sessionguard-guacamole-0.3.1.jar`.
 Maven may therefore change the project version without requiring a Dockerfile
 change.

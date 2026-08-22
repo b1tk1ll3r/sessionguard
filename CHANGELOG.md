@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 - Web UI editor stability
+
+- Fixed Master live refresh replacing Farm, Resource and server-control forms every five seconds.
+- Split live server metrics from editable server-control fields.
+- Farm and Resource editors are mounted once; only their data tables and broker leases refresh.
+- Added explicit reset/reload actions instead of implicit form replacement.
+- Added Agent policy dirty-state protection and visible "Ungespeicherte Änderungen" state.
+- Added explicit Agent policy reload with confirmation before discarding unsaved edits.
+- Added `Cache-Control: no-store, max-age=0` for the Web UI HTML and JavaScript.
+- Added browser-level regression verification covering a full live-refresh cycle.
+
 ## 0.3.0 - Broker & Director production candidate
 
 ### Broker and farm control

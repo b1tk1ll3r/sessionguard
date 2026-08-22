@@ -25,7 +25,7 @@ import (
 	"github.com/example/sessionguard/internal/windowsx"
 )
 
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 type App struct {
 	cfg          config.Agent
@@ -981,6 +981,7 @@ func (a *App) serveHTTP(ctx context.Context) error {
 	}
 	mux.HandleFunc("GET /app.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store, max-age=0")
 		_, _ = fmt.Fprint(w, agentJS)
 	})
 	mux.Handle("GET /", secure(http.HandlerFunc(a.agentPage)))
@@ -1104,5 +1105,6 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 func (a *App) agentPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	_, _ = fmt.Fprint(w, agentHTML)
 }

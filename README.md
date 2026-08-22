@@ -2,9 +2,17 @@
 
 SessionGuard is a Go-based **RDS control plane** for Windows Remote Desktop Session Hosts. It is designed to complement Apache Guacamole: Guacamole remains the HTML5/RDP gateway, while SessionGuard provides Citrix-like broker, Director, policy, profile-lifecycle and operations functions.
 
-**Current development version: 0.3.0 (Broker & Director production candidate)**
+**Current development version: 0.3.1 (Broker & Director production candidate)**
 
 > SessionGuard is not an ICA/HDX implementation and does not replace the Windows RDS runtime. It deliberately reuses standard RDP/WTS, Guacamole and PocketID/OIDC.
+
+## 0.3.1 UI stability fix
+
+- Live dashboard refresh no longer recreates editable Master forms.
+- Server live metrics and server-control inputs are rendered independently.
+- Farm and Published Resource editors remain mounted while their live tables refresh.
+- Agent policy edits are protected by a dirty-state guard and an explicit reload action.
+- HTML and `app.js` are served with `Cache-Control: no-store` to prevent stale UI code after upgrades.
 
 ## 0.3.0 at a glance
 
@@ -275,4 +283,4 @@ The current source tree contains unit tests for configuration, templates, profil
 
 ## Production-candidate status
 
-The design intentionally fails closed around destructive profile operations and broker farm boundaries. Nevertheless, v0.3.0 should be introduced as a canary before broad production rollout. In particular, validate native WTS behavior, SMB failure/recovery, PostgreSQL backup/restore, Guacamole extension loading and your exact PocketID group claims in your environment.
+The design intentionally fails closed around destructive profile operations and broker farm boundaries. Nevertheless, v0.3.1 should be introduced as a canary before broad production rollout. In particular, validate native WTS behavior, SMB failure/recovery, PostgreSQL backup/restore, Guacamole extension loading and your exact PocketID group claims in your environment.
