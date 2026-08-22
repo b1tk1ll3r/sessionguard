@@ -1,0 +1,29 @@
+# Merge these changes into the existing Guacamole stack.
+# Build context must point at the SessionGuard repository root.
+services:
+  guacamole:
+    image: sessionguard-guacamole:${SESSIONGUARD_VERSION:-0.3.0}
+    build:
+      context: ../..
+      dockerfile: deploy/guacamole/Dockerfile.guacamole
+      args:
+        GUACAMOLE_VERSION: ${GUACAMOLE_VERSION:-1.6.0}
+    environment:
+      # Existing Guacamole variables stay unchanged.
+      SESSIONGUARD_MASTER_URL: http://sessionguard-master:8080
+      SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY}
+      SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
+    networks:
+      - aio_proxy
+      - sessionguard_control
+
+  sessionguard-master:
+    # Your SessionGuard master may be in another compose project. If so, attach
+    # it to this external network and use its Docker DNS name above.
+    networks:
+      - sessionguard_control
+
+networks:
+  sessionguard_control:
+    name: sessionguard_control
+    internal: true

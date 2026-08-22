@@ -1,0 +1,92 @@
+# Guacamole 1.6 Integration
+
+## Design
+
+The SessionGuard Guacamole extension is deliberately **not** an authentication provider in the identity sense. PocketID/header authentication stays responsible for user identity.
+
+The extension subclasses Guacamole's authentication-provider extension point only to decorate the authenticated `UserContext` with a `TokenInjectingUserContext`. At connection time it sends the current Guacamole username plus connection identity to the SessionGuard broker and injects returned tokens.
+
+This avoids:
+
+- writing dynamic hostnames directly into the Guacamole PostgreSQL database;
+- reimplementing PocketID authentication in SessionGuard;
+- opening a management connection from Master to RDS hosts.
+
+## Build
+
+```bash
+cd guacamole-extension
+mvn -DskipTests package
+```
+
+Or use `deploy/guacamole/Dockerfile.guacamole`, which builds the JAR and copies it to the stock Guacamole extension directory.
+
+## Required Guacamole environment
+
+```yaml
+SESSIONGUARD_MASTER_URL: http://sessionguard-master:8080
+SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY}
+SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
+```
+
+Use the same broker API key configured on the SessionGuard Master. The URL should preferably be an internal network URL, not the public Internet endpoint.
+
+## Desktop connection
+
+Configure the Guacamole RDP hostname as:
+
+```text
+${SESSIONGUARD_HOST}
+```
+
+The extension resolves the target host at connection time.
+
+## RemoteApp
+
+Use:
+
+```text
+hostname:        ${SESSIONGUARD_HOST}
+remote-app:      ${SESSIONGUARD_REMOTE_APP}
+remote-app-dir:  ${SESSIONGUARD_REMOTE_APP_DIR}
+remote-app-args: ${SESSIONGUARD_REMOTE_APP_ARGS}
+```
+
+Create a matching Published Resource in SessionGuard by Guacamole connection ID or name.
+
+## Header-auth security boundary
+
+Your Guacamole configuration uses a trusted header such as `X-Guacamole-User`. That is safe only if untrusted requests cannot reach Guacamole directly with an attacker-controlled copy of that header.
+
+Recommended topology:
+
+```text
+Internet
+   |
+Traefik + forward-auth/header scrubber
+   |
+dedicated trusted Guacamole proxy network
+   |
+Guacamole
+   +--- private backend ---> guacd
+   +--- private backend ---> PostgreSQL
+   +--- private control ---> SessionGuard Master
+```
+
+Do not rely solely on the fact that the public Traefik router strips inbound identity headers if arbitrary unrelated containers can directly connect to Guacamole's port on a shared Docker network.
+
+## Integration with the supplied compose
+
+Your existing PocketID → traefik-forward-auth → Guacamole chain can remain unchanged. The required additions are:
+
+1. build Guacamole using `deploy/guacamole/Dockerfile.guacamole`;
+2. add the three `SESSIONGUARD_*` variables above;
+3. give Guacamole private reachability to the SessionGuard Master;
+4. add SessionGuard Published Resources matching your Guacamole connections;
+5. replace fixed RDP hostnames in brokered connections with `${SESSIONGUARD_HOST}`.
+
+`deploy/guacamole/docker-compose.sessionguard.example.yml` provides a focused example rather than replacing your complete existing stack.
+
+## Failure behavior
+
+If the SessionGuard broker is unavailable, the extension fails the brokered connection instead of choosing an arbitrary backend. This is intentional where reconnect affinity/profile concurrency matters. Existing already-established Guacamole/RDP sessions are unaffected.

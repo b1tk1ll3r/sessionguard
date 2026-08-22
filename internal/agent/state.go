@@ -6,17 +6,27 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/example/sessionguard/internal/config"
 	"github.com/example/sessionguard/internal/model"
 )
 
 type State struct {
-	AgentID      string                      `json:"agent_id,omitempty"`
-	AgentToken   string                      `json:"agent_token,omitempty"`
-	Policy       model.Policy                `json:"policy"`
-	LastSessions map[uint32]model.Session    `json:"last_sessions,omitempty"`
-	Pending      map[string]model.CleanupJob `json:"pending,omitempty"`
+	AgentID             string                            `json:"agent_id,omitempty"`
+	AgentToken          string                            `json:"agent_token,omitempty"`
+	Policy              model.Policy                      `json:"policy"`
+	LastSessions        map[uint32]model.Session          `json:"last_sessions,omitempty"`
+	Pending             map[string]model.CleanupJob       `json:"pending,omitempty"`
+	ProfileJobs         map[string]model.ProfileJob       `json:"profile_jobs,omitempty"`
+	ProfileStatus       map[string]model.ProfileStatus    `json:"profile_status,omitempty"`
+	DisconnectedSince   map[uint32]time.Time              `json:"disconnected_since,omitempty"`
+	AutoLogoffRequested map[uint32]time.Time              `json:"auto_logoff_requested,omitempty"`
+	RestoredSessions    map[uint32]bool                   `json:"restored_sessions,omitempty"`
+	ProcessedCommands   map[string]time.Time              `json:"processed_commands,omitempty"`
+	CommandResults      []model.CommandResult             `json:"command_results,omitempty"`
+	Events              []model.AgentEvent                `json:"events,omitempty"`
+	Telemetry           map[uint32]model.SessionTelemetry `json:"telemetry,omitempty"`
 }
 
 type stateStore struct {
@@ -25,7 +35,20 @@ type stateStore struct {
 }
 
 func loadState(path string, initial model.Policy) (State, error) {
-	s := State{Policy: initial, LastSessions: map[uint32]model.Session{}, Pending: map[string]model.CleanupJob{}}
+	s := State{
+		Policy:              initial,
+		LastSessions:        map[uint32]model.Session{},
+		Pending:             map[string]model.CleanupJob{},
+		ProfileJobs:         map[string]model.ProfileJob{},
+		ProfileStatus:       map[string]model.ProfileStatus{},
+		DisconnectedSince:   map[uint32]time.Time{},
+		AutoLogoffRequested: map[uint32]time.Time{},
+		RestoredSessions:    map[uint32]bool{},
+		ProcessedCommands:   map[string]time.Time{},
+		CommandResults:      []model.CommandResult{},
+		Events:              []model.AgentEvent{},
+		Telemetry:           map[uint32]model.SessionTelemetry{},
+	}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -41,6 +64,44 @@ func loadState(path string, initial model.Policy) (State, error) {
 	}
 	if s.Pending == nil {
 		s.Pending = map[string]model.CleanupJob{}
+	}
+	if s.ProfileJobs == nil {
+		s.ProfileJobs = map[string]model.ProfileJob{}
+	}
+	if s.ProfileStatus == nil {
+		s.ProfileStatus = map[string]model.ProfileStatus{}
+	}
+	if s.DisconnectedSince == nil {
+		s.DisconnectedSince = map[uint32]time.Time{}
+	}
+	if s.AutoLogoffRequested == nil {
+		s.AutoLogoffRequested = map[uint32]time.Time{}
+	}
+	if s.ProcessedCommands == nil {
+		s.ProcessedCommands = map[string]time.Time{}
+	}
+	if s.CommandResults == nil {
+		s.CommandResults = []model.CommandResult{}
+	}
+	if s.Events == nil {
+		s.Events = []model.AgentEvent{}
+	}
+	if s.Telemetry == nil {
+		s.Telemetry = map[uint32]model.SessionTelemetry{}
+	}
+	if s.RestoredSessions == nil {
+		// Upgrade safety: do not restore into sessions that were already active before
+		// upgrading from a version that did not track per-session restore state.
+		s.RestoredSessions = map[uint32]bool{}
+		for id := range s.LastSessions {
+			s.RestoredSessions[id] = true
+		}
+	}
+	if len(s.Events) > 500 {
+		s.Events = append([]model.AgentEvent(nil), s.Events[len(s.Events)-500:]...)
+	}
+	if len(s.CommandResults) > 100 {
+		s.CommandResults = append([]model.CommandResult(nil), s.CommandResults[len(s.CommandResults)-100:]...)
 	}
 	if s.Policy.Revision == "" {
 		s.Policy = initial

@@ -1,14 +1,60 @@
 services:
+  sessionguard-postgres:
+    image: postgres:${POSTGRES_VERSION:-17}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${SESSIONGUARD_DB_NAME:-sessionguard}
+      POSTGRES_USER: ${SESSIONGUARD_DB_USER:-sessionguard}
+      POSTGRES_PASSWORD: ${SESSIONGUARD_DB_PASSWORD:?SESSIONGUARD_DB_PASSWORD is required}
+    volumes:
+      - sessionguard-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [sessionguard_backend]
+
   sessionguard-master:
     build:
       context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
+    depends_on:
+      sessionguard-postgres:
+        condition: service_healthy
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    environment:
+      SESSIONGUARD_DATABASE_URL: postgres://${SESSIONGUARD_DB_USER:-sessionguard}:${SESSIONGUARD_DB_PASSWORD}@sessionguard-postgres:5432/${SESSIONGUARD_DB_NAME:-sessionguard}?sslmode=disable
+      SESSIONGUARD_ENROLLMENT_TOKEN: ${SESSIONGUARD_ENROLLMENT_TOKEN:?SESSIONGUARD_ENROLLMENT_TOKEN is required}
+      SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY:?SESSIONGUARD_BROKER_API_KEY is required}
+      SESSIONGUARD_OIDC_CLIENT_SECRET: ${SESSIONGUARD_OIDC_CLIENT_SECRET:?SESSIONGUARD_OIDC_CLIENT_SECRET is required}
+      SESSIONGUARD_ALERT_WEBHOOK_URL: ${SESSIONGUARD_ALERT_WEBHOOK_URL:-}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./master.json:/etc/sessionguard/master.json:ro
-      - sessionguard-data:/var/lib/sessionguard
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - sessionguard_backend
+      - proxy
+
+networks:
+  sessionguard_backend:
+    internal: true
+  proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK:-aio_proxy}
 
 volumes:
-  sessionguard-data:
+  sessionguard-postgres:

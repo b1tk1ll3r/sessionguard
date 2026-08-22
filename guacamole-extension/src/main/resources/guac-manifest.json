@@ -1,0 +1,8 @@
+{
+  "guacamoleVersion": "1.6.0",
+  "name": "SessionGuard Broker",
+  "namespace": "sessionguard-broker",
+  "authProviders": [
+    "info.hilden.sessionguard.guacamole.SessionGuardAuthenticationProvider"
+  ]
+}

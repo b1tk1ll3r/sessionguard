@@ -1,0 +1,18 @@
+ARG GUACAMOLE_VERSION=1.6.0
+
+FROM maven:3.9-eclipse-temurin-17 AS extension-build
+WORKDIR /src
+COPY guacamole-extension/pom.xml ./pom.xml
+COPY guacamole-extension/src ./src
+RUN mvn -B -DskipTests package \
+    && JAR="$(find target -maxdepth 1 -type f -name 'sessionguard-guacamole-*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -n 1)" \
+    && test -n "$JAR" \
+    && cp "$JAR" /tmp/sessionguard-guacamole.jar
+
+# This target is used by CI to export the extension as a standalone JAR.
+FROM scratch AS extension-artifact
+COPY --from=extension-build /tmp/sessionguard-guacamole.jar /sessionguard-guacamole.jar
+
+# Default/final image: stock Guacamole plus the SessionGuard broker extension.
+FROM guacamole/guacamole:${GUACAMOLE_VERSION} AS guacamole
+COPY --from=extension-build /tmp/sessionguard-guacamole.jar /etc/guacamole/extensions/sessionguard-broker.jar

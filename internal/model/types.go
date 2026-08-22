@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-const ProtocolVersion = 1
+const ProtocolVersion = 3
 
 type OIDCConfig struct {
 	Issuer       string   `json:"issuer"`
@@ -11,6 +11,35 @@ type OIDCConfig struct {
 	RedirectURL  string   `json:"redirect_url"`
 	AdminGroups  []string `json:"admin_groups,omitempty"`
 	SecureCookie bool     `json:"secure_cookie"`
+}
+
+type RBACConfig struct {
+	DefaultRole string              `json:"default_role,omitempty"`
+	Groups      map[string][]string `json:"groups,omitempty"`
+}
+
+type BrokerConfig struct {
+	Enabled           bool   `json:"enabled"`
+	APIKey            string `json:"api_key,omitempty"`
+	LeaseSeconds      int    `json:"lease_seconds"`
+	MinHealthScore    int    `json:"min_health_score"`
+	ReconnectExisting bool   `json:"reconnect_existing"`
+	SingleSession     bool   `json:"single_session_per_user"`
+	DefaultFarmID     string `json:"default_farm_id,omitempty"`
+}
+
+type AlertConfig struct {
+	Enabled                 bool   `json:"enabled"`
+	WebhookURL              string `json:"webhook_url,omitempty"`
+	CPUPercent              int    `json:"cpu_percent"`
+	MemoryPercent           int    `json:"memory_percent"`
+	DiskFreeGB              int    `json:"disk_free_gb"`
+	HealthScore             int    `json:"health_score"`
+	OfflineSeconds          int    `json:"offline_seconds"`
+	ProfileFailures         int    `json:"profile_failures"`
+	DisconnectedSessions    int    `json:"disconnected_sessions"`
+	LogonDurationSeconds    int    `json:"logon_duration_seconds"`
+	NotificationMinInterval int    `json:"notification_min_interval_seconds"`
 }
 
 type CleanupPolicy struct {
@@ -24,6 +53,33 @@ type CleanupPolicy struct {
 	AllowedProfileRoots []string `json:"allowed_profile_roots,omitempty"`
 }
 
+type ProfileFolder struct {
+	Path         string   `json:"path"`
+	ExcludeGlobs []string `json:"exclude_globs,omitempty"`
+}
+
+type ProfilePolicy struct {
+	Enabled              bool            `json:"enabled"`
+	StoreRoot            string          `json:"store_root,omitempty"`
+	BackupOnLogoff       bool            `json:"backup_on_logoff"`
+	RestoreOnLogon       bool            `json:"restore_on_logon"`
+	BackupDelaySeconds   int             `json:"backup_delay_seconds"`
+	RetrySeconds         int             `json:"retry_seconds"`
+	RestoreWindowSeconds int             `json:"restore_window_seconds"`
+	KeepVersions         int             `json:"keep_versions"`
+	ExcludeUsers         []string        `json:"exclude_users,omitempty"`
+	ExcludeSIDs          []string        `json:"exclude_sids,omitempty"`
+	Folders              []ProfileFolder `json:"folders,omitempty"`
+}
+
+type SessionPolicy struct {
+	ControlEnabled             bool     `json:"control_enabled"`
+	DisconnectedLogoffEnabled  bool     `json:"disconnected_logoff_enabled"`
+	DisconnectedTimeoutSeconds int      `json:"disconnected_timeout_seconds"`
+	ExcludeUsers               []string `json:"exclude_users,omitempty"`
+	ExcludeSIDs                []string `json:"exclude_sids,omitempty"`
+}
+
 type ShortcutSpec struct {
 	Target           string `json:"target"`
 	Arguments        string `json:"arguments,omitempty"`
@@ -34,7 +90,7 @@ type ShortcutSpec struct {
 
 type TemplateItem struct {
 	ID            string        `json:"id"`
-	Kind          string        `json:"kind"` // file, directory, url, shortcut
+	Kind          string        `json:"kind"`
 	Target        string        `json:"target"`
 	Source        string        `json:"source,omitempty"`
 	Content       string        `json:"content,omitempty"`
@@ -48,27 +104,73 @@ type Policy struct {
 	Revision  string         `json:"revision"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	Cleanup   CleanupPolicy  `json:"cleanup"`
+	Profiles  ProfilePolicy  `json:"profiles"`
+	Sessions  SessionPolicy  `json:"sessions"`
 	Templates []TemplateItem `json:"templates,omitempty"`
 }
 
 type Session struct {
-	ID          uint32 `json:"id"`
-	State       string `json:"state"`
-	User        string `json:"user,omitempty"`
-	Domain      string `json:"domain,omitempty"`
-	SID         string `json:"sid,omitempty"`
-	ClientName  string `json:"client_name,omitempty"`
-	StationName string `json:"station_name,omitempty"`
+	ID                uint32     `json:"id"`
+	State             string     `json:"state"`
+	User              string     `json:"user,omitempty"`
+	Domain            string     `json:"domain,omitempty"`
+	SID               string     `json:"sid,omitempty"`
+	ClientName        string     `json:"client_name,omitempty"`
+	ClientAddress     string     `json:"client_address,omitempty"`
+	StationName       string     `json:"station_name,omitempty"`
+	LogonAt           *time.Time `json:"logon_at,omitempty"`
+	ConnectAt         *time.Time `json:"connect_at,omitempty"`
+	LastInputAt       *time.Time `json:"last_input_at,omitempty"`
+	DisconnectedSince *time.Time `json:"disconnected_since,omitempty"`
+	IdleSeconds       int64      `json:"idle_seconds,omitempty"`
+}
+
+type ProcessInfo struct {
+	PID         uint32 `json:"pid"`
+	SessionID   uint32 `json:"session_id"`
+	Name        string `json:"name"`
+	UserSID     string `json:"user_sid,omitempty"`
+	MemoryBytes uint64 `json:"memory_bytes,omitempty"`
 }
 
 type ServerInfo struct {
-	Hostname        string `json:"hostname"`
-	OS              string `json:"os"`
-	Version         string `json:"version,omitempty"`
-	Build           string `json:"build,omitempty"`
-	UptimeSeconds   uint64 `json:"uptime_seconds"`
-	MemoryTotal     uint64 `json:"memory_total"`
-	MemoryAvailable uint64 `json:"memory_available"`
+	Hostname        string  `json:"hostname"`
+	OS              string  `json:"os"`
+	Version         string  `json:"version,omitempty"`
+	Build           string  `json:"build,omitempty"`
+	UptimeSeconds   uint64  `json:"uptime_seconds"`
+	MemoryTotal     uint64  `json:"memory_total"`
+	MemoryAvailable uint64  `json:"memory_available"`
+	CPUPercent      float64 `json:"cpu_percent,omitempty"`
+	DiskTotal       uint64  `json:"disk_total,omitempty"`
+	DiskFree        uint64  `json:"disk_free,omitempty"`
+}
+
+type HealthCheck struct {
+	Name    string `json:"name"`
+	OK      bool   `json:"ok"`
+	Message string `json:"message,omitempty"`
+}
+
+type HealthStatus struct {
+	Score          int           `json:"score"`
+	ProfileStoreOK bool          `json:"profile_store_ok"`
+	RDPListenerOK  bool          `json:"rdp_listener_ok"`
+	Checks         []HealthCheck `json:"checks,omitempty"`
+	CalculatedAt   time.Time     `json:"calculated_at"`
+}
+
+type SessionTelemetry struct {
+	SessionID         uint32    `json:"session_id"`
+	SID               string    `json:"sid,omitempty"`
+	User              string    `json:"user,omitempty"`
+	FirstSeenAt       time.Time `json:"first_seen_at"`
+	LogonAt           time.Time `json:"logon_at,omitempty"`
+	RestoreStartedAt  time.Time `json:"restore_started_at,omitempty"`
+	RestoreFinishedAt time.Time `json:"restore_finished_at,omitempty"`
+	ReadyAt           time.Time `json:"ready_at,omitempty"`
+	RestoreDurationMS int64     `json:"restore_duration_ms,omitempty"`
+	ObservedLogonMS   int64     `json:"observed_logon_ms,omitempty"`
 }
 
 type CleanupJob struct {
@@ -80,26 +182,198 @@ type CleanupJob struct {
 	LastError   string    `json:"last_error,omitempty"`
 }
 
+type ProfileJob struct {
+	ID          string    `json:"id"`
+	Operation   string    `json:"operation"`
+	SID         string    `json:"sid"`
+	User        string    `json:"user"`
+	SessionID   uint32    `json:"session_id,omitempty"`
+	ProfilePath string    `json:"profile_path"`
+	Reason      string    `json:"reason,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	DueAt       time.Time `json:"due_at"`
+	Attempts    int       `json:"attempts"`
+	LastError   string    `json:"last_error,omitempty"`
+}
+
+type ProfileStatus struct {
+	SID              string    `json:"sid"`
+	User             string    `json:"user,omitempty"`
+	LastBackupAt     time.Time `json:"last_backup_at,omitempty"`
+	LastRestoreAt    time.Time `json:"last_restore_at,omitempty"`
+	LastBackupError  string    `json:"last_backup_error,omitempty"`
+	LastRestoreError string    `json:"last_restore_error,omitempty"`
+}
+
+type AgentEvent struct {
+	Time    time.Time `json:"time"`
+	Level   string    `json:"level"`
+	Type    string    `json:"type"`
+	User    string    `json:"user,omitempty"`
+	Message string    `json:"message"`
+}
+
+type SessionCommand struct {
+	ID          string    `json:"id"`
+	Action      string    `json:"action"`
+	SessionID   uint32    `json:"session_id,omitempty"`
+	PID         uint32    `json:"pid,omitempty"`
+	Title       string    `json:"title,omitempty"`
+	Message     string    `json:"message,omitempty"`
+	RequestedBy string    `json:"requested_by,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+type CommandResult struct {
+	ID          string    `json:"id"`
+	Action      string    `json:"action"`
+	SessionID   uint32    `json:"session_id,omitempty"`
+	PID         uint32    `json:"pid,omitempty"`
+	CompletedAt time.Time `json:"completed_at"`
+	Success     bool      `json:"success"`
+	Error       string    `json:"error,omitempty"`
+}
+
+type SessionActionRequest struct {
+	Action  string `json:"action"`
+	PID     uint32 `json:"pid,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+type AuditEntry struct {
+	Time    time.Time `json:"time"`
+	Actor   string    `json:"actor"`
+	Action  string    `json:"action"`
+	Target  string    `json:"target,omitempty"`
+	Result  string    `json:"result"`
+	Details string    `json:"details,omitempty"`
+}
+
 type AgentSnapshot struct {
-	ProtocolVersion int          `json:"protocol_version"`
-	AgentID         string       `json:"agent_id"`
-	Server          ServerInfo   `json:"server"`
-	Sessions        []Session    `json:"sessions"`
-	PendingCleanup  []CleanupJob `json:"pending_cleanup,omitempty"`
-	PolicyRevision  string       `json:"policy_revision"`
-	AgentVersion    string       `json:"agent_version"`
-	Time            time.Time    `json:"time"`
+	ProtocolVersion int                         `json:"protocol_version"`
+	AgentID         string                      `json:"agent_id"`
+	Server          ServerInfo                  `json:"server"`
+	Health          HealthStatus                `json:"health"`
+	Sessions        []Session                   `json:"sessions"`
+	Processes       []ProcessInfo               `json:"processes,omitempty"`
+	Telemetry       map[uint32]SessionTelemetry `json:"telemetry,omitempty"`
+	PendingCleanup  []CleanupJob                `json:"pending_cleanup,omitempty"`
+	ProfileJobs     []ProfileJob                `json:"profile_jobs,omitempty"`
+	ProfileStatus   map[string]ProfileStatus    `json:"profile_status,omitempty"`
+	Events          []AgentEvent                `json:"events,omitempty"`
+	CommandResults  []CommandResult             `json:"command_results,omitempty"`
+	Policy          Policy                      `json:"policy"`
+	PolicyRevision  string                      `json:"policy_revision"`
+	AgentVersion    string                      `json:"agent_version"`
+	Time            time.Time                   `json:"time"`
 }
 
 type AgentRecord struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	MachineID     string        `json:"machine_id"`
-	TokenHash     string        `json:"token_hash"`
-	EnrolledAt    time.Time     `json:"enrolled_at"`
-	LastSeen      time.Time     `json:"last_seen"`
-	Snapshot      AgentSnapshot `json:"snapshot"`
-	DesiredPolicy *Policy       `json:"desired_policy,omitempty"`
+	ID                 string            `json:"id"`
+	Name               string            `json:"name"`
+	MachineID          string            `json:"machine_id"`
+	TokenHash          string            `json:"token_hash"`
+	EnrolledAt         time.Time         `json:"enrolled_at"`
+	LastSeen           time.Time         `json:"last_seen"`
+	Snapshot           AgentSnapshot     `json:"snapshot"`
+	DesiredPolicy      *Policy           `json:"desired_policy,omitempty"`
+	PendingCommands    []SessionCommand  `json:"pending_commands,omitempty"`
+	Tags               map[string]string `json:"tags,omitempty"`
+	FarmIDs            []string          `json:"farm_ids,omitempty"`
+	MaintenanceMode    string            `json:"maintenance_mode,omitempty"` // online, drain, maintenance
+	RestartWhenDrained bool              `json:"restart_when_drained,omitempty"`
+}
+
+type Farm struct {
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Description  string            `json:"description,omitempty"`
+	AgentIDs     []string          `json:"agent_ids,omitempty"`
+	RequiredTags map[string]string `json:"required_tags,omitempty"`
+	Policy       *Policy           `json:"policy,omitempty"`
+	Enabled      bool              `json:"enabled"`
+}
+
+type Resource struct {
+	ID                      string `json:"id"`
+	Name                    string `json:"name"`
+	Kind                    string `json:"kind"` // desktop, remoteapp
+	FarmID                  string `json:"farm_id"`
+	GuacamoleConnectionID   string `json:"guacamole_connection_id,omitempty"`
+	GuacamoleConnectionName string `json:"guacamole_connection_name,omitempty"`
+	RemoteApp               string `json:"remote_app,omitempty"`
+	RemoteAppDir            string `json:"remote_app_dir,omitempty"`
+	RemoteAppArgs           string `json:"remote_app_args,omitempty"`
+	Enabled                 bool   `json:"enabled"`
+}
+
+type UserLease struct {
+	UserKey    string    `json:"user_key"`
+	AgentID    string    `json:"agent_id"`
+	FarmID     string    `json:"farm_id,omitempty"`
+	ResourceID string    `json:"resource_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	Reason     string    `json:"reason,omitempty"`
+}
+
+type BrokerRequest struct {
+	Username       string `json:"username"`
+	ConnectionID   string `json:"connection_id,omitempty"`
+	ConnectionName string `json:"connection_name,omitempty"`
+	ResourceID     string `json:"resource_id,omitempty"`
+	FarmID         string `json:"farm_id,omitempty"`
+}
+
+type BrokerResponse struct {
+	AgentID      string            `json:"agent_id"`
+	Hostname     string            `json:"hostname"`
+	FarmID       string            `json:"farm_id,omitempty"`
+	ResourceID   string            `json:"resource_id,omitempty"`
+	Reconnect    bool              `json:"reconnect"`
+	Reason       string            `json:"reason"`
+	HealthScore  int               `json:"health_score"`
+	Tokens       map[string]string `json:"tokens"`
+	LeaseExpires time.Time         `json:"lease_expires"`
+}
+
+type SessionHistoryEvent struct {
+	Time       time.Time `json:"time"`
+	AgentID    string    `json:"agent_id"`
+	Hostname   string    `json:"hostname"`
+	SessionID  uint32    `json:"session_id"`
+	User       string    `json:"user,omitempty"`
+	SID        string    `json:"sid,omitempty"`
+	Event      string    `json:"event"`
+	State      string    `json:"state,omitempty"`
+	ClientName string    `json:"client_name,omitempty"`
+	Details    string    `json:"details,omitempty"`
+}
+
+type PolicyVersion struct {
+	ID        string    `json:"id"`
+	Target    string    `json:"target"`
+	Revision  string    `json:"revision"`
+	CreatedAt time.Time `json:"created_at"`
+	Actor     string    `json:"actor"`
+	Policy    Policy    `json:"policy"`
+}
+
+type Alert struct {
+	ID             string    `json:"id"`
+	Key            string    `json:"key"`
+	Severity       string    `json:"severity"`
+	AgentID        string    `json:"agent_id,omitempty"`
+	Hostname       string    `json:"hostname,omitempty"`
+	Type           string    `json:"type"`
+	Message        string    `json:"message"`
+	Active         bool      `json:"active"`
+	FirstSeenAt    time.Time `json:"first_seen_at"`
+	LastSeenAt     time.Time `json:"last_seen_at"`
+	ResolvedAt     time.Time `json:"resolved_at,omitempty"`
+	LastNotifiedAt time.Time `json:"last_notified_at,omitempty"`
 }
 
 type EnrollRequest struct {
@@ -114,6 +388,7 @@ type EnrollResponse struct {
 }
 
 type HeartbeatResponse struct {
-	DesiredPolicy *Policy   `json:"desired_policy,omitempty"`
-	ServerTime    time.Time `json:"server_time"`
+	DesiredPolicy *Policy          `json:"desired_policy,omitempty"`
+	Commands      []SessionCommand `json:"commands,omitempty"`
+	ServerTime    time.Time        `json:"server_time"`
 }

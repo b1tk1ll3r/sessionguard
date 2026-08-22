@@ -74,7 +74,7 @@ func runConsole(path string) error {
 type serviceHandler struct{ path string }
 
 func (h *serviceHandler) Execute(args []string, requests <-chan svc.ChangeRequest, status chan<- svc.Status) (bool, uint32) {
-	const accepts = svc.AcceptStop | svc.AcceptShutdown
+	const accepts = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptSessionChange
 	status <- svc.Status{State: svc.StartPending}
 	app, err := loadApp(h.path)
 	if err != nil {
@@ -90,6 +90,11 @@ func (h *serviceHandler) Execute(args []string, requests <-chan svc.ChangeReques
 			switch c.Cmd {
 			case svc.Interrogate:
 				status <- c.CurrentStatus
+			case svc.SessionChange:
+				// Windows sends SERVICE_CONTROL_SESSIONCHANGE for logon, logoff, connect,
+				// disconnect, lock and unlock. Wake the agent worker without doing file or
+				// network I/O inside the Service Control Manager callback.
+				app.NotifySessionChange()
 			case svc.Stop, svc.Shutdown:
 				status <- svc.Status{State: svc.StopPending}
 				cancel()

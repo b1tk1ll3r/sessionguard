@@ -2,14 +2,47 @@
   "listen": ":8080",
   "public_url": "https://sessionguard.example.org",
   "data_file": "/var/lib/sessionguard/master.json",
-  "enrollment_token": "CHANGE-THIS-TO-A-LONG-RANDOM-SECRET",
+  "database_url": "",
+  "enrollment_token": "SET-BY-SESSIONGUARD_ENROLLMENT_TOKEN",
   "offline_after_seconds": 30,
+  "history_limit": 50000,
   "oidc": {
-    "issuer": "https://id.example.org",
-    "client_id": "POCKET-ID-CLIENT-ID",
-    "client_secret": "POCKET-ID-CLIENT-SECRET",
+    "issuer": "https://auth.example.org",
+    "client_id": "SESSIONGUARD-POCKETID-CLIENT-ID",
+    "client_secret": "SET-BY-SESSIONGUARD_OIDC_CLIENT_SECRET",
     "redirect_url": "https://sessionguard.example.org/oidc/callback",
-    "admin_groups": ["sessionguard-admins"],
+    "admin_groups": [],
     "secure_cookie": true
+  },
+  "rbac": {
+    "default_role": "viewer",
+    "groups": {
+      "sessionguard-admins": ["admin"],
+      "sessionguard-helpdesk": ["helpdesk"],
+      "sessionguard-operators": ["operator"],
+      "sessionguard-auditors": ["auditor"]
+    }
+  },
+  "broker": {
+    "enabled": true,
+    "api_key": "SET-BY-SESSIONGUARD_BROKER_API_KEY",
+    "lease_seconds": 900,
+    "min_health_score": 60,
+    "reconnect_existing": true,
+    "single_session_per_user": true,
+    "default_farm_id": ""
+  },
+  "alerts": {
+    "enabled": true,
+    "webhook_url": "",
+    "cpu_percent": 90,
+    "memory_percent": 90,
+    "disk_free_gb": 10,
+    "health_score": 50,
+    "offline_seconds": 120,
+    "profile_failures": 3,
+    "disconnected_sessions": 20,
+    "logon_duration_seconds": 30,
+    "notification_min_interval_seconds": 900
   }
 }

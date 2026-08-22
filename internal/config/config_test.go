@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/example/sessionguard/internal/model"
 )
 
 func TestAgentDefaults(t *testing.T) {
@@ -20,5 +22,29 @@ func TestAgentDefaults(t *testing.T) {
 	}
 	if len(c.Policy.Cleanup.AllowedProfileRoots) == 0 {
 		t.Fatal("missing allowed profile root")
+	}
+}
+
+func TestValidateProfilePolicy(t *testing.T) {
+	p := model.Policy{
+		Cleanup:  model.CleanupPolicy{GraceSeconds: 600, PollSeconds: 10, RetrySeconds: 60, AllowedProfileRoots: []string{`C:\Users`}},
+		Profiles: model.ProfilePolicy{Enabled: true, StoreRoot: `\\server\profiles`, RetrySeconds: 60, RestoreWindowSeconds: 120, Folders: []model.ProfileFolder{{Path: `AppData\Roaming\Example`}}},
+		Sessions: model.SessionPolicy{DisconnectedTimeoutSeconds: 3600},
+	}
+	if err := ValidatePolicy(p); err != nil {
+		t.Fatal(err)
+	}
+	p.Profiles.Folders[0].Path = `..\Windows`
+	if err := ValidatePolicy(p); err == nil {
+		t.Fatal("expected profile traversal validation error")
+	}
+}
+
+func TestDisconnectedTimeoutMinimum(t *testing.T) {
+	p := model.Policy{Cleanup: model.CleanupPolicy{GraceSeconds: 600, PollSeconds: 10, RetrySeconds: 60}, Sessions: model.SessionPolicy{DisconnectedLogoffEnabled: true, DisconnectedTimeoutSeconds: 30}}
+	NormalizePolicy(&p)
+	p.Sessions.DisconnectedTimeoutSeconds = 30
+	if err := ValidatePolicy(p); err == nil {
+		t.Fatal("expected disconnected timeout validation error")
 	}
 }

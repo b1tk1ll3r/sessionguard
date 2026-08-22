@@ -1,0 +1,174 @@
+name: release-main
+
+on:
+  push:
+    branches:
+      - 'main'
+
+jobs:
+  release-images:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: git.send.nrw
+      GITEA_API_BASE: https://git.send.nrw
+      DOCKER_ORG: sendnrw
+      DOCKER_LATEST: latest
+      GUACAMOLE_VERSION: '1.6.0'
+      RUNNER_TOOL_CACHE: /toolcache
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          # Required so git describe can see repository tags.
+          fetch-depth: 0
+
+      - name: Get Meta
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          REPO_VERSION="$(git describe --tags --always | sed 's/^v//')"
+
+          echo "REPO_NAME=${REPO_NAME}" >> "$GITHUB_OUTPUT"
+          echo "REPO_VERSION=${REPO_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "GUAC_IMAGE=${REPO_NAME}-guacamole" >> "$GITHUB_OUTPUT"
+          echo "EXT_PACKAGE=${REPO_NAME}-guacamole-extension" >> "$GITHUB_OUTPUT"
+
+          echo "Repository : ${REPO_NAME}"
+          echo "Version    : ${REPO_VERSION}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker BuildX
+        uses: docker/setup-buildx-action@v2
+        with:
+          config-inline: |
+            [registry."git.send.nrw"]
+              http = true
+              insecure = true
+
+      - name: Login to Gitea Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push SessionGuard Master
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/${{ steps.meta.outputs.REPO_NAME }}:${{ steps.meta.outputs.REPO_VERSION }}
+            ${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/${{ steps.meta.outputs.REPO_NAME }}:${{ env.DOCKER_LATEST }}
+
+      # Export exactly the same extension that is embedded into the Guacamole image.
+      # The dedicated target avoids depending on the Maven project version in CI.
+      - name: Build Guacamole Extension JAR
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./deploy/guacamole/Dockerfile.guacamole
+          target: extension-artifact
+          platforms: linux/amd64
+          push: false
+          outputs: type=local,dest=./dist/guacamole-extension
+          build-args: |
+            GUACAMOLE_VERSION=${{ env.GUACAMOLE_VERSION }}
+
+      - name: Verify Guacamole Extension JAR
+        id: extension
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          JAR="dist/guacamole-extension/sessionguard-guacamole.jar"
+          test -s "$JAR"
+
+          SHA256="$(sha256sum "$JAR" | awk '{print $1}')"
+          echo "JAR=${JAR}" >> "$GITHUB_OUTPUT"
+          echo "SHA256=${SHA256}" >> "$GITHUB_OUTPUT"
+
+          echo "SessionGuard Guacamole extension"
+          echo "SHA256: ${SHA256}"
+
+      # Publishes the raw JAR in Gitea's Generic Package Registry.
+      # The same credentials as the container registry are used here. If your
+      # registry account has no package-write permission, create dedicated
+      # PACKAGE_USERNAME / PACKAGE_TOKEN secrets and substitute them below.
+      - name: Publish Guacamole Extension Package
+        shell: bash
+        env:
+          PACKAGE_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          PACKAGE_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          PACKAGE_NAME="${{ steps.meta.outputs.EXT_PACKAGE }}"
+          VERSION="${{ steps.meta.outputs.REPO_VERSION }}"
+          JAR="${{ steps.extension.outputs.JAR }}"
+          FILE_NAME="sessionguard-guacamole.jar"
+          URL="${GITEA_API_BASE}/api/packages/${DOCKER_ORG}/generic/${PACKAGE_NAME}/${VERSION}/${FILE_NAME}"
+
+          # Generic package files are immutable in Gitea. A re-run for the same
+          # commit/version therefore returns 409; treat that as already published.
+          HTTP_CODE="$(curl --silent --show-error \
+            --output /tmp/sessionguard-package-response.txt \
+            --write-out '%{http_code}' \
+            --user "${PACKAGE_USERNAME}:${PACKAGE_PASSWORD}" \
+            --upload-file "$JAR" \
+            "$URL")"
+
+          case "$HTTP_CODE" in
+            201)
+              echo "Published ${PACKAGE_NAME}:${VERSION}"
+              ;;
+            409)
+              echo "Package ${PACKAGE_NAME}:${VERSION} already exists; keeping immutable artifact."
+              ;;
+            *)
+              cat /tmp/sessionguard-package-response.txt || true
+              echo "Package upload failed with HTTP ${HTTP_CODE}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Build and push Guacamole + SessionGuard Extension
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./deploy/guacamole/Dockerfile.guacamole
+          target: guacamole
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            GUACAMOLE_VERSION=${{ env.GUACAMOLE_VERSION }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/${{ steps.meta.outputs.GUAC_IMAGE }}:${{ steps.meta.outputs.REPO_VERSION }}
+            ${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/${{ steps.meta.outputs.GUAC_IMAGE }}:${{ env.DOCKER_LATEST }}
+
+      - name: Release summary
+        shell: bash
+        run: |
+          cat <<EOF
+          SessionGuard release completed.
+
+          Master image:
+            ${REGISTRY}/${DOCKER_ORG}/${{ steps.meta.outputs.REPO_NAME }}:${{ steps.meta.outputs.REPO_VERSION }}
+
+          Guacamole image:
+            ${REGISTRY}/${DOCKER_ORG}/${{ steps.meta.outputs.GUAC_IMAGE }}:${{ steps.meta.outputs.REPO_VERSION }}
+
+          Extension package:
+            ${GITEA_API_BASE}/api/packages/${DOCKER_ORG}/generic/${{ steps.meta.outputs.EXT_PACKAGE }}/${{ steps.meta.outputs.REPO_VERSION }}/sessionguard-guacamole.jar
+
+          Extension SHA256:
+            ${{ steps.extension.outputs.SHA256 }}
+          EOF

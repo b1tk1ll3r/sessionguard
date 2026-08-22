@@ -10,7 +10,9 @@
     "client_id": "POCKET-ID-AGENT-CLIENT-ID",
     "client_secret": "POCKET-ID-AGENT-CLIENT-SECRET",
     "redirect_url": "https://ts01-mgmt.example.org/oidc/callback",
-    "admin_groups": ["sessionguard-admins"],
+    "admin_groups": [
+      "sessionguard-admins"
+    ],
     "secure_cookie": true
   },
   "policy": {
@@ -20,9 +22,65 @@
       "poll_seconds": 10,
       "retry_seconds": 60,
       "dry_run": true,
-      "exclude_users": ["Administrator", "DefaultAccount", "WDAGUtilityAccount"],
-      "exclude_sids": ["S-1-5-18", "S-1-5-19", "S-1-5-20"],
-      "allowed_profile_roots": ["C:\\Users"]
+      "exclude_users": [
+        "Administrator",
+        "DefaultAccount",
+        "WDAGUtilityAccount"
+      ],
+      "exclude_sids": [
+        "S-1-5-18",
+        "S-1-5-19",
+        "S-1-5-20"
+      ],
+      "allowed_profile_roots": [
+        "C:\\Users"
+      ]
+    },
+    "profiles": {
+      "enabled": true,
+      "store_root": "\\\\fileserver\\SessionGuardProfiles",
+      "backup_on_logoff": true,
+      "restore_on_logon": true,
+      "backup_delay_seconds": 5,
+      "retry_seconds": 60,
+      "restore_window_seconds": 120,
+      "keep_versions": 2,
+      "exclude_users": [
+        "Administrator"
+      ],
+      "exclude_sids": [
+        "S-1-5-18",
+        "S-1-5-19",
+        "S-1-5-20"
+      ],
+      "folders": [
+        {
+          "path": "AppData\\Roaming\\Example",
+          "exclude_globs": [
+            "Cache/**",
+            "*.tmp"
+          ]
+        },
+        {
+          "path": "Desktop"
+        },
+        {
+          "path": "Documents"
+        }
+      ]
+    },
+    "sessions": {
+      "control_enabled": true,
+      "disconnected_logoff_enabled": true,
+      "disconnected_timeout_seconds": 3600,
+      "exclude_users": [
+        "Administrator"
+      ],
+      "exclude_sids": [
+        "S-1-5-18",
+        "S-1-5-19",
+        "S-1-5-20"
+      ]
     },
     "templates": [
       {
