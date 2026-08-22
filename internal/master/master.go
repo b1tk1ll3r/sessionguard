@@ -23,7 +23,7 @@ import (
 	"github.com/example/sessionguard/internal/model"
 )
 
-const Version = "0.4.0"
+const Version = "0.4.1"
 
 type App struct {
 	cfg   config.Master

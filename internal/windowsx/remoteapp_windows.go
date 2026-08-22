@@ -3,6 +3,7 @@
 package windowsx
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -180,29 +181,33 @@ ConvertTo-Json -InputObject @($results) -Compress -Depth 5`, payload)
 }
 
 func runPowerShellJSON(script string, out any) error {
-	encoded := encodePowerShell(script)
+	// Suppress PowerShell's auxiliary streams. On Windows PowerShell 5.1 these
+	// can otherwise be serialized as "#< CLIXML" when handles are redirected.
+	// stderr is also kept separate from stdout so progress/information records
+	// can never corrupt the JSON protocol used between PowerShell and the agent.
+	preamble := `$ProgressPreference='SilentlyContinue'
+$InformationPreference='SilentlyContinue'
+$VerbosePreference='SilentlyContinue'
+$DebugPreference='SilentlyContinue'
+$WarningPreference='SilentlyContinue'
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+`
+	encoded := encodePowerShell(preamble + script)
 	cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded)
-	b, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	b, err := cmd.Output()
 	if err != nil {
-		msg := strings.TrimSpace(string(b))
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(string(b))
+		}
 		if msg == "" {
 			msg = err.Error()
 		}
 		return fmt.Errorf("PowerShell: %s", msg)
 	}
-	raw := strings.TrimSpace(string(b))
-	if raw == "" {
-		raw = "[]"
-	}
-	// ConvertTo-Json emits an object instead of an array when there is exactly
-	// one item on older Windows PowerShell. Accept both forms.
-	if strings.HasPrefix(raw, "{") {
-		raw = "[" + raw + "]"
-	}
-	if err := json.Unmarshal([]byte(raw), out); err != nil {
-		return fmt.Errorf("decode PowerShell JSON: %w (output=%q)", err, raw)
-	}
-	return nil
+	return decodePowerShellJSON(string(b), out)
 }
 
 func encodePowerShell(script string) string {

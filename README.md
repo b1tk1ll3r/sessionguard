@@ -2,9 +2,13 @@
 
 SessionGuard is a Go-based **RDS control plane** for Windows Remote Desktop Session Hosts. It is designed to complement Apache Guacamole: Guacamole remains the HTML5/RDP gateway, while SessionGuard provides Citrix-like broker, Director, policy, profile-lifecycle and operations functions.
 
-**Current development version: 0.4.0 (RemoteApp control plane)**
+**Current development version: 0.4.1 (RemoteApp PowerShell/CLIXML robustness)**
 
 > SessionGuard is not an ICA/HDX implementation and does not replace the Windows RDS runtime. It deliberately reuses standard RDP/WTS, Guacamole and PocketID/OIDC.
+
+## 0.4.1 RemoteApp robustness
+
+Windows PowerShell auxiliary streams are now isolated from the JSON protocol used by RemoteApp discovery/reconciliation. CLIXML/progress noise no longer breaks RemoteApp status decoding.
 
 ## 0.4.0 RemoteApp control plane
 

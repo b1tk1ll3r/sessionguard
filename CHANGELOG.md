@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 — RemoteApp PowerShell/CLIXML robustness
+
+- RemoteApp PowerShell execution now keeps stderr separate from JSON stdout.
+- Suppresses PowerShell progress/information/verbose/debug/warning streams for machine-readable RemoteApp calls.
+- Forces UTF-8 console output where supported.
+- JSON decoder defensively extracts the first valid JSON object/array and tolerates CLIXML/banner noise before or after the payload.
+- Added regression tests for the `#< CLIXML` contamination observed on Windows PowerShell 5.1.
+- Protocol remains version 4; no Master/Agent schema migration is required.
+
 ## 0.4.0 — Agent-managed RemoteApps
 
 - Added a farm-scoped RemoteApp desired-state model to Published Resources.
