@@ -1,0 +1,61 @@
+{
+  "listen": ":9091",
+  "public_url": "https://ts01-mgmt.example.org",
+  "data_dir": "C:\\ProgramData\\SessionGuard",
+  "master_url": "https://sessionguard.example.org",
+  "enrollment_token": "CHANGE-THIS-TO-A-LONG-RANDOM-SECRET",
+  "heartbeat_seconds": 10,
+  "oidc": {
+    "issuer": "https://id.example.org",
+    "client_id": "POCKET-ID-AGENT-CLIENT-ID",
+    "client_secret": "POCKET-ID-AGENT-CLIENT-SECRET",
+    "redirect_url": "https://ts01-mgmt.example.org/oidc/callback",
+    "admin_groups": ["sessionguard-admins"],
+    "secure_cookie": true
+  },
+  "policy": {
+    "cleanup": {
+      "enabled": true,
+      "grace_seconds": 600,
+      "poll_seconds": 10,
+      "retry_seconds": 60,
+      "dry_run": true,
+      "exclude_users": ["Administrator", "DefaultAccount", "WDAGUtilityAccount"],
+      "exclude_sids": ["S-1-5-18", "S-1-5-19", "S-1-5-20"],
+      "allowed_profile_roots": ["C:\\Users"]
+    },
+    "templates": [
+      {
+        "id": "support-url",
+        "kind": "url",
+        "target": "Desktop\\Support.url",
+        "url": "https://support.example.org",
+        "overwrite": true
+      },
+      {
+        "id": "company-shortcut",
+        "kind": "shortcut",
+        "target": "Desktop\\Fachanwendung.lnk",
+        "overwrite": true,
+        "shortcut": {
+          "target": "C:\\Program Files\\Example\\app.exe",
+          "arguments": "",
+          "description": "Fachanwendung"
+        }
+      },
+      {
+        "id": "settings-file",
+        "kind": "file",
+        "target": "AppData\\Roaming\\Example\\defaults.json",
+        "source": "\\\\fileserver\\sessionguard-templates\\defaults.json",
+        "overwrite": true
+      },
+      {
+        "id": "work-folder",
+        "kind": "directory",
+        "target": "Desktop\\Arbeit",
+        "overwrite": false
+      }
+    ]
+  }
+}

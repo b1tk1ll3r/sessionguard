@@ -1,0 +1,15 @@
+{
+  "listen": ":8080",
+  "public_url": "https://sessionguard.example.org",
+  "data_file": "/var/lib/sessionguard/master.json",
+  "enrollment_token": "CHANGE-THIS-TO-A-LONG-RANDOM-SECRET",
+  "offline_after_seconds": 30,
+  "oidc": {
+    "issuer": "https://id.example.org",
+    "client_id": "POCKET-ID-CLIENT-ID",
+    "client_secret": "POCKET-ID-CLIENT-SECRET",
+    "redirect_url": "https://sessionguard.example.org/oidc/callback",
+    "admin_groups": ["sessionguard-admins"],
+    "secure_cookie": true
+  }
+}
