@@ -13,6 +13,43 @@ type OIDCConfig struct {
 	SecureCookie bool     `json:"secure_cookie"`
 }
 
+// AccessAuthConfig configures the SessionGuard Master as a Traefik ForwardAuth
+// endpoint for browser-facing services such as Apache Guacamole. It deliberately
+// has its own redirect/cookie scope because the SessionGuard admin UI and the
+// protected application may live on different DNS domains. Blank issuer/client
+// fields inherit their values from the primary OIDC configuration.
+type AccessAuthConfig struct {
+	Enabled           bool     `json:"enabled"`
+	Issuer            string   `json:"issuer,omitempty"`
+	ClientID          string   `json:"client_id,omitempty"`
+	ClientSecret      string   `json:"client_secret,omitempty"`
+	RedirectURL       string   `json:"redirect_url"`
+	LogoutRedirectURL string   `json:"logout_redirect_url,omitempty"`
+	CookieName        string   `json:"cookie_name,omitempty"`
+	CookieDomain      string   `json:"cookie_domain,omitempty"`
+	SecureCookie      bool     `json:"secure_cookie"`
+	SessionHours      int      `json:"session_hours,omitempty"`
+	UsernameClaim     string   `json:"username_claim,omitempty"`
+	AllowedGroups     []string `json:"allowed_groups,omitempty"`
+	AllowedHosts      []string `json:"allowed_hosts,omitempty"`
+}
+
+// AuthSession is an opaque, server-side browser session. SessionGuard stores
+// only the SHA-256 hash of the random browser token as the map key.
+type AuthSession struct {
+	ID        string    `json:"id"`
+	TokenHash string    `json:"token_hash"`
+	Subject   string    `json:"subject"`
+	SID       string    `json:"sid,omitempty"`
+	Username  string    `json:"username"`
+	Email     string    `json:"email,omitempty"`
+	Name      string    `json:"name,omitempty"`
+	Groups    []string  `json:"groups,omitempty"`
+	IDToken   string    `json:"id_token,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 type RBACConfig struct {
 	DefaultRole string              `json:"default_role,omitempty"`
 	Groups      map[string][]string `json:"groups,omitempty"`

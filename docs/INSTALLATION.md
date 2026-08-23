@@ -350,16 +350,16 @@ git describe --tags --always | sed 's/^v//'
 Für einen sauberen Release:
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.5.0
+git push origin v0.5.0
 git push origin main
 ```
 
-Ein Commit exakt auf Tag `v0.4.0` erzeugt dann:
+Ein Commit exakt auf Tag `v0.5.0` erzeugt dann:
 
 ```text
-git.send.nrw/sendnrw/sessionguard:0.4.0
-git.send.nrw/sendnrw/sessionguard-guacamole:0.4.0
+git.send.nrw/sendnrw/sessionguard:0.5.0
+git.send.nrw/sendnrw/sessionguard-guacamole:0.5.0
 ```
 
 `latest` wird ebenfalls aktualisiert.
@@ -367,8 +367,8 @@ git.send.nrw/sendnrw/sessionguard-guacamole:0.4.0
 ### 7.3 Release prüfen
 
 ```bash
-docker pull git.send.nrw/sendnrw/sessionguard:0.4.0
-docker pull git.send.nrw/sendnrw/sessionguard-guacamole:0.4.0
+docker pull git.send.nrw/sendnrw/sessionguard:0.5.0
+docker pull git.send.nrw/sendnrw/sessionguard-guacamole:0.5.0
 ```
 
 Für Produktion möglichst einen festen Versions-Tag und nicht ausschließlich `latest` verwenden.
@@ -402,7 +402,7 @@ Anlegen:
 Beispiel:
 
 ```dotenv
-SESSIONGUARD_VERSION=0.4.0
+SESSIONGUARD_VERSION=0.5.0
 POSTGRES_VERSION=17
 
 TRAEFIK_NETWORK=aio_proxy
@@ -655,7 +655,7 @@ image: guacamole/guacamole:${GUACAMOLE_VERSION:-1.6.0}
 Nachher:
 
 ```yaml
-image: git.send.nrw/sendnrw/sessionguard-guacamole:${SESSIONGUARD_VERSION:-0.4.0}
+image: git.send.nrw/sendnrw/sessionguard-guacamole:${SESSIONGUARD_VERSION:-0.5.0}
 ```
 
 `guac-init` kann weiterhin das offizielle Guacamole-Image verwenden.
@@ -675,7 +675,7 @@ SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
 In die Guacamole `.env` zusätzlich:
 
 ```dotenv
-SESSIONGUARD_VERSION=0.4.0
+SESSIONGUARD_VERSION=0.5.0
 SESSIONGUARD_BROKER_API_KEY=<EXAKT_DERSELBE_BROKER_API_KEY_WIE_AM_MASTER>
 ```
 
@@ -1909,7 +1909,7 @@ Vorher PostgreSQL sichern.
 Dann neuen Tag setzen, beispielsweise:
 
 ```dotenv
-SESSIONGUARD_VERSION=0.4.0
+SESSIONGUARD_VERSION=0.5.0
 ```
 
 Update:
@@ -1942,7 +1942,7 @@ Broker
 Gleichen SessionGuard-Release-Tag verwenden:
 
 ```dotenv
-SESSIONGUARD_VERSION=0.4.0
+SESSIONGUARD_VERSION=0.5.0
 ```
 
 Dann:

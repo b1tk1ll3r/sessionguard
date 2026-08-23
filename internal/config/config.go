@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,17 +13,18 @@ import (
 )
 
 type Master struct {
-	Listen              string             `json:"listen"`
-	PublicURL           string             `json:"public_url"`
-	DataFile            string             `json:"data_file,omitempty"`
-	DatabaseURL         string             `json:"database_url,omitempty"`
-	EnrollmentToken     string             `json:"enrollment_token"`
-	OIDC                model.OIDCConfig   `json:"oidc"`
-	RBAC                model.RBACConfig   `json:"rbac"`
-	Broker              model.BrokerConfig `json:"broker"`
-	Alerts              model.AlertConfig  `json:"alerts"`
-	OfflineAfterSeconds int                `json:"offline_after_seconds"`
-	HistoryLimit        int                `json:"history_limit"`
+	Listen              string                 `json:"listen"`
+	PublicURL           string                 `json:"public_url"`
+	DataFile            string                 `json:"data_file,omitempty"`
+	DatabaseURL         string                 `json:"database_url,omitempty"`
+	EnrollmentToken     string                 `json:"enrollment_token"`
+	OIDC                model.OIDCConfig       `json:"oidc"`
+	AccessAuth          model.AccessAuthConfig `json:"access_auth"`
+	RBAC                model.RBACConfig       `json:"rbac"`
+	Broker              model.BrokerConfig     `json:"broker"`
+	Alerts              model.AlertConfig      `json:"alerts"`
+	OfflineAfterSeconds int                    `json:"offline_after_seconds"`
+	HistoryLimit        int                    `json:"history_limit"`
 }
 
 type Agent struct {
@@ -92,6 +95,29 @@ func LoadMaster(path string) (Master, error) {
 	if c.RBAC.Groups == nil {
 		c.RBAC.Groups = map[string][]string{}
 	}
+	if c.AccessAuth.Enabled {
+		if strings.TrimSpace(c.AccessAuth.Issuer) == "" {
+			c.AccessAuth.Issuer = c.OIDC.Issuer
+		}
+		if strings.TrimSpace(c.AccessAuth.ClientID) == "" {
+			c.AccessAuth.ClientID = c.OIDC.ClientID
+		}
+		if strings.TrimSpace(c.AccessAuth.ClientSecret) == "" {
+			c.AccessAuth.ClientSecret = c.OIDC.ClientSecret
+		}
+		if c.AccessAuth.CookieName == "" {
+			c.AccessAuth.CookieName = "sg_access_session"
+		}
+		if c.AccessAuth.SessionHours <= 0 {
+			c.AccessAuth.SessionHours = 8
+		}
+		if c.AccessAuth.UsernameClaim == "" {
+			c.AccessAuth.UsernameClaim = "preferred_username"
+		}
+		if err := validateAccessAuth(c.AccessAuth); err != nil {
+			return c, err
+		}
+	}
 	if err := validateOIDC(c.OIDC); err != nil {
 		return c, err
 	}
@@ -156,6 +182,7 @@ func applyMasterEnv(c *Master) {
 	set("SESSIONGUARD_ENROLLMENT_TOKEN", &c.EnrollmentToken)
 	set("SESSIONGUARD_BROKER_API_KEY", &c.Broker.APIKey)
 	set("SESSIONGUARD_OIDC_CLIENT_SECRET", &c.OIDC.ClientSecret)
+	set("SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET", &c.AccessAuth.ClientSecret)
 	set("SESSIONGUARD_ALERT_WEBHOOK_URL", &c.Alerts.WebhookURL)
 }
 
@@ -194,6 +221,28 @@ func SaveJSON(path string, v any) error {
 func validateOIDC(c model.OIDCConfig) error {
 	if c.Issuer == "" || c.ClientID == "" || c.RedirectURL == "" {
 		return errors.New("oidc issuer, client_id and redirect_url are required")
+	}
+	return nil
+}
+
+func validateAccessAuth(c model.AccessAuthConfig) error {
+	if strings.TrimSpace(c.Issuer) == "" || strings.TrimSpace(c.ClientID) == "" || strings.TrimSpace(c.ClientSecret) == "" || strings.TrimSpace(c.RedirectURL) == "" || strings.TrimSpace(c.LogoutRedirectURL) == "" {
+		return errors.New("access_auth issuer, client_id, client_secret, redirect_url and logout_redirect_url are required when access_auth is enabled")
+	}
+	for label, raw := range map[string]string{"redirect_url": c.RedirectURL, "logout_redirect_url": c.LogoutRedirectURL} {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Hostname() == "" || u.Scheme == "" {
+			return fmt.Errorf("access_auth.%s must be an absolute URL", label)
+		}
+		if c.SecureCookie && !strings.EqualFold(u.Scheme, "https") {
+			return fmt.Errorf("access_auth.%s must use https when secure_cookie is enabled", label)
+		}
+	}
+	if c.SessionHours < 1 || c.SessionHours > 168 {
+		return errors.New("access_auth.session_hours must be between 1 and 168")
+	}
+	if strings.ContainsAny(c.CookieName, " ;,\t\r\n") {
+		return errors.New("access_auth.cookie_name contains invalid characters")
 	}
 	return nil
 }

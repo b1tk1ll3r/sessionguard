@@ -24,6 +24,7 @@ type data struct {
 	SessionHistory []model.SessionHistoryEvent  `json:"session_history,omitempty"`
 	PolicyHistory  []model.PolicyVersion        `json:"policy_history,omitempty"`
 	Alerts         map[string]model.Alert       `json:"alerts,omitempty"`
+	AuthSessions   map[string]model.AuthSession `json:"auth_sessions,omitempty"`
 	GlobalPolicy   *model.Policy                `json:"global_policy,omitempty"`
 }
 
@@ -47,7 +48,7 @@ func emptyData() data {
 	return data{
 		Agents: map[string]model.AgentRecord{}, Farms: map[string]model.Farm{}, Resources: map[string]model.Resource{},
 		Leases: map[string]model.UserLease{}, Audit: []model.AuditEntry{}, SessionHistory: []model.SessionHistoryEvent{},
-		PolicyHistory: []model.PolicyVersion{}, Alerts: map[string]model.Alert{},
+		PolicyHistory: []model.PolicyVersion{}, Alerts: map[string]model.Alert{}, AuthSessions: map[string]model.AuthSession{},
 	}
 }
 
@@ -95,6 +96,9 @@ func (s *store) normalize() {
 	}
 	if s.data.Alerts == nil {
 		s.data.Alerts = map[string]model.Alert{}
+	}
+	if s.data.AuthSessions == nil {
+		s.data.AuthSessions = map[string]model.AuthSession{}
 	}
 	for id, a := range s.data.Agents {
 		if a.Tags == nil {

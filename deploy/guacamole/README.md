@@ -48,3 +48,27 @@ With `single_session_per_user=true`, the lease key is global per username. With 
 ## 4. Header-auth boundary
 
 If Guacamole uses `HTTP_AUTH_HEADER=X-Guacamole-User`, untrusted traffic must not be able to reach Guacamole directly and supply that header. Keep the reverse proxy/header scrubber as the only trusted ingress path. Prefer a dedicated proxy network instead of sharing Guacamole's port with unrelated containers.
+
+## 5. SessionGuard Access Auth (0.5.0+)
+
+SessionGuard Master can replace the separate `traefik-forward-auth` service for Guacamole. Keep Guacamole's header-auth extension (`HTTP_AUTH_HEADER=X-Guacamole-User`), but configure Traefik to call:
+
+```text
+http://sessionguard-master:8080/auth/verify
+```
+
+Expose the Master's `/auth/*` routes on the Guacamole hostname through the reserved public prefix `/_sessionguard/auth/*`, with that router excluded from ForwardAuth. The recommended PocketID callback is therefore:
+
+```text
+https://guacamole.example.org/_sessionguard/auth/oidc/callback
+```
+
+and the PocketID logout/back-channel callback is:
+
+```text
+https://guacamole.example.org/_sessionguard/auth/backchannel-logout
+```
+
+Before ForwardAuth, strip any client-provided `X-Guacamole-User` and `X-SessionGuard-*` identity headers. After successful ForwardAuth, copy only SessionGuard's auth response headers to Guacamole.
+
+See `docs/ACCESS-AUTH.md` for complete labels and migration steps.

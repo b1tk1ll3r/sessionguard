@@ -48,3 +48,29 @@ func TestDisconnectedTimeoutMinimum(t *testing.T) {
 		t.Fatal("expected disconnected timeout validation error")
 	}
 }
+
+func TestValidateAccessAuthRequiresHTTPSForSecureCookie(t *testing.T) {
+	c := model.AccessAuthConfig{
+		Enabled: true, Issuer: "https://id.example.org", ClientID: "client", ClientSecret: "secret",
+		RedirectURL: "http://guac.example.org/_sessionguard/auth/oidc/callback", LogoutRedirectURL: "https://guac.example.org/",
+		CookieName: "sg_access_session", SecureCookie: true, SessionHours: 8,
+	}
+	if err := validateAccessAuth(c); err == nil {
+		t.Fatal("expected https validation error")
+	}
+	c.RedirectURL = "https://guac.example.org/_sessionguard/auth/oidc/callback"
+	if err := validateAccessAuth(c); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateAccessAuthRequiresClientSecret(t *testing.T) {
+	c := model.AccessAuthConfig{
+		Issuer: "https://id.example.org", ClientID: "client",
+		RedirectURL: "https://guac.example.org/_sessionguard/auth/oidc/callback", LogoutRedirectURL: "https://guac.example.org/",
+		CookieName: "sg_access_session", SecureCookie: true, SessionHours: 8,
+	}
+	if err := validateAccessAuth(c); err == nil {
+		t.Fatal("expected missing client secret validation error")
+	}
+}

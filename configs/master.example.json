@@ -14,13 +14,38 @@
     "admin_groups": [],
     "secure_cookie": true
   },
+  "access_auth": {
+    "enabled": false,
+    "issuer": "",
+    "client_id": "",
+    "client_secret": "SET-BY-SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET",
+    "redirect_url": "https://guacamole.example.org/_sessionguard/auth/oidc/callback",
+    "logout_redirect_url": "https://guacamole.example.org/",
+    "cookie_name": "sg_access_session",
+    "cookie_domain": "",
+    "secure_cookie": true,
+    "session_hours": 8,
+    "username_claim": "preferred_username",
+    "allowed_groups": [],
+    "allowed_hosts": [
+      "guacamole.example.org"
+    ]
+  },
   "rbac": {
     "default_role": "viewer",
     "groups": {
-      "sessionguard-admins": ["admin"],
-      "sessionguard-helpdesk": ["helpdesk"],
-      "sessionguard-operators": ["operator"],
-      "sessionguard-auditors": ["auditor"]
+      "sessionguard-admins": [
+        "admin"
+      ],
+      "sessionguard-helpdesk": [
+        "helpdesk"
+      ],
+      "sessionguard-operators": [
+        "operator"
+      ],
+      "sessionguard-auditors": [
+        "auditor"
+      ]
     }
   },
   "broker": {

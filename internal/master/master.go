@@ -23,13 +23,14 @@ import (
 	"github.com/example/sessionguard/internal/model"
 )
 
-const Version = "0.4.1"
+const Version = "0.5.0"
 
 type App struct {
-	cfg   config.Master
-	store *store
-	auth  *auth.Manager
-	http  *http.Client
+	cfg    config.Master
+	store  *store
+	auth   *auth.Manager
+	access *auth.AccessManager
+	http   *http.Client
 }
 
 func New(ctx context.Context, cfg config.Master) (*App, error) {
@@ -42,12 +43,20 @@ func New(ctx context.Context, cfg config.Master) (*App, error) {
 		_ = s.close()
 		return nil, fmt.Errorf("OIDC: %w", err)
 	}
-	return &App{cfg: cfg, store: s, auth: a, http: &http.Client{Timeout: 8 * time.Second}}, nil
+	access, err := auth.NewAccess(ctx, cfg.AccessAuth, authSessionStore{s: s})
+	if err != nil {
+		_ = s.close()
+		return nil, fmt.Errorf("access auth: %w", err)
+	}
+	return &App{cfg: cfg, store: s, auth: a, access: access, http: &http.Client{Timeout: 8 * time.Second}}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	a.auth.Register(mux)
+	if a.access != nil {
+		a.access.Register(mux)
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, 200, map[string]any{"ok": true, "version": Version, "store": a.store.kind()})
 	})
@@ -88,6 +97,8 @@ func (a *App) Run(ctx context.Context) error {
 	mux.Handle("DELETE /api/v1/resources/{id}", a.auth.Require(a.require("manage", http.HandlerFunc(a.resourceDelete))))
 	mux.Handle("GET /api/v1/alerts", a.auth.Require(http.HandlerFunc(a.alerts)))
 	mux.Handle("GET /api/v1/leases", a.auth.Require(http.HandlerFunc(a.leases)))
+	mux.Handle("GET /api/v1/access/sessions", a.auth.Require(a.require("manage", http.HandlerFunc(a.accessSessions))))
+	mux.Handle("DELETE /api/v1/access/sessions/{id}", a.auth.Require(a.require("manage", http.HandlerFunc(a.accessSessionRevoke))))
 	server := &http.Server{Addr: a.cfg.Listen, Handler: securityHeaders(mux), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second}
 	go a.monitor(ctx)
 	go func() {
@@ -590,13 +601,19 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	farms := len(a.store.data.Farms)
 	resources := len(a.store.data.Resources)
 	alerts := 0
+	accessSessions := 0
 	for _, x := range a.store.data.Alerts {
 		if x.Active {
 			alerts++
 		}
 	}
+	for _, sess := range a.store.data.AuthSessions {
+		if sess.ExpiresAt.IsZero() || now.Before(sess.ExpiresAt) {
+			accessSessions++
+		}
+	}
 	a.store.mu.RUnlock()
-	httpx.JSON(w, 200, map[string]any{"agents": out, "server_time": now, "farms": farms, "resources": resources, "active_alerts": alerts, "store": a.store.kind()})
+	httpx.JSON(w, 200, map[string]any{"agents": out, "server_time": now, "farms": farms, "resources": resources, "active_alerts": alerts, "access_sessions": accessSessions, "store": a.store.kind()})
 }
 func (a *App) agentDetail(w http.ResponseWriter, r *http.Request) {
 	rec, ok := a.store.get(r.PathValue("id"))
@@ -1272,6 +1289,67 @@ func (a *App) alerts(w http.ResponseWriter, r *http.Request) {
 		return out[i].LastSeenAt.After(out[j].LastSeenAt)
 	})
 	httpx.JSON(w, 200, map[string]any{"alerts": out})
+}
+
+func (a *App) accessSessions(w http.ResponseWriter, r *http.Request) {
+	type publicSession struct {
+		ID        string    `json:"id"`
+		Subject   string    `json:"subject"`
+		SID       string    `json:"sid,omitempty"`
+		Username  string    `json:"username"`
+		Email     string    `json:"email,omitempty"`
+		Name      string    `json:"name,omitempty"`
+		Groups    []string  `json:"groups,omitempty"`
+		CreatedAt time.Time `json:"created_at"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	now := time.Now().UTC()
+	a.store.mu.RLock()
+	out := make([]publicSession, 0, len(a.store.data.AuthSessions))
+	for _, sess := range a.store.data.AuthSessions {
+		if !sess.ExpiresAt.IsZero() && !now.Before(sess.ExpiresAt) {
+			continue
+		}
+		out = append(out, publicSession{ID: sess.ID, Subject: sess.Subject, SID: sess.SID, Username: sess.Username, Email: sess.Email, Name: sess.Name, Groups: append([]string(nil), sess.Groups...), CreatedAt: sess.CreatedAt, ExpiresAt: sess.ExpiresAt})
+	}
+	a.store.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	httpx.JSON(w, 200, map[string]any{"sessions": out})
+}
+
+func (a *App) accessSessionRevoke(w http.ResponseWriter, r *http.Request) {
+	if !httpx.SameOrigin(r) {
+		httpx.Error(w, 403, "cross-origin request rejected")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		httpx.Error(w, 400, "session id is required")
+		return
+	}
+	a.store.mu.Lock()
+	var username string
+	var hash string
+	for h, sess := range a.store.data.AuthSessions {
+		if sess.ID == id {
+			hash, username = h, sess.Username
+			break
+		}
+	}
+	if hash == "" {
+		a.store.mu.Unlock()
+		httpx.Error(w, 404, "access session not found")
+		return
+	}
+	delete(a.store.data.AuthSessions, hash)
+	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: requestActor(r), Action: "access_session_revoke", Target: username, Result: "success", Details: id})
+	err := a.store.saveLocked()
+	a.store.mu.Unlock()
+	if err != nil {
+		httpx.Error(w, 500, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *App) leases(w http.ResponseWriter, r *http.Request) {

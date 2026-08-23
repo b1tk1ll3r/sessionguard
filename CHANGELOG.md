@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0 — Integrated Guacamole Access Auth
+
+- SessionGuard Master now provides `/auth/verify` as a Traefik ForwardAuth endpoint for Guacamole.
+- Added a dedicated PocketID/OIDC `access_auth` flow, independent from the Master administration login.
+- Added opaque server-side access sessions persisted in the existing control-plane store; only the SHA-256 browser-token hash is used as the lookup key.
+- Added strict `X-Guacamole-User` emission only for valid access sessions, group restrictions and allowed return-host validation.
+- Added RP-initiated OIDC logout using the discovered `end_session_endpoint`.
+- Added OIDC Back-Channel Logout with signature/issuer/audience/event/`iat`/`jti` validation and replay protection.
+- Added concurrent-safe per-flow OIDC state cookies and external-prefix-aware callback cookie paths.
+- Guacamole extension now ships a framework-free JS helper which redirects Guacamole logout into full SessionGuard/PocketID logout and periodically detects revoked/expired access sessions.
+- Added Traefik header-scrubbing/ForwardAuth deployment guidance and migration away from `traefik-forward-auth`.
+- Agent protocol remains version 4; no Agent data/schema migration is required.
+
 ## 0.4.1 — RemoteApp PowerShell/CLIXML robustness
 
 - RemoteApp PowerShell execution now keeps stderr separate from JSON stdout.

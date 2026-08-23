@@ -2,7 +2,7 @@
 # Build context must point at the SessionGuard repository root.
 services:
   guacamole:
-    image: sessionguard-guacamole:${SESSIONGUARD_VERSION:-0.4.0}
+    image: sessionguard-guacamole:${SESSIONGUARD_VERSION:-0.5.0}
     build:
       context: ../..
       dockerfile: deploy/guacamole/Dockerfile.guacamole

@@ -2,9 +2,21 @@
 
 SessionGuard is a Go-based **RDS control plane** for Windows Remote Desktop Session Hosts. It is designed to complement Apache Guacamole: Guacamole remains the HTML5/RDP gateway, while SessionGuard provides Citrix-like broker, Director, policy, profile-lifecycle and operations functions.
 
-**Current development version: 0.4.1 (RemoteApp PowerShell/CLIXML robustness)**
+**Current development version: 0.5.0 (integrated Guacamole Access Auth / ForwardAuth)**
 
 > SessionGuard is not an ICA/HDX implementation and does not replace the Windows RDS runtime. It deliberately reuses standard RDP/WTS, Guacamole and PocketID/OIDC.
+
+## 0.5.0 Integrated Guacamole Access Auth
+
+- `sessionguard-master` can now act directly as Traefik ForwardAuth for Guacamole; no separate forward-auth container is required.
+- PocketID OIDC login for Guacamole uses a separate `access_auth` configuration/cookie scope from the SessionGuard admin UI.
+- Browser sessions are opaque, server-side and persisted in the existing Master store; expired/revoked sessions are denied even if Guacamole still has an old auth token.
+- `X-Guacamole-User` is emitted only after a valid SessionGuard access-session check. There is no fallback identity.
+- OIDC RP-initiated logout and PocketID back-channel logout are supported; back-channel tokens are signature/audience/event/time/JTI checked with replay protection.
+- The Guacamole extension now includes plain JavaScript which detects Guacamole logout and performs the full SessionGuard/PocketID logout, while also polling access-session status to close stale browser sessions.
+- Recommended deployment exposes `/_sessionguard/auth/*` on the Guacamole hostname and routes that prefix to the same Master container.
+
+See `docs/ACCESS-AUTH.md` for the PocketID and Traefik migration.
 
 ## 0.4.1 RemoteApp robustness
 
@@ -313,4 +325,4 @@ The current source tree contains unit tests for configuration, templates, profil
 
 ## Production-candidate status
 
-The design intentionally fails closed around destructive profile operations and broker farm boundaries. Nevertheless, v0.4.0 should be introduced as a canary before broad production rollout. In particular, validate native WTS behavior, SMB failure/recovery, PostgreSQL backup/restore, Guacamole extension loading and your exact PocketID group claims in your environment.
+The design intentionally fails closed around destructive profile operations and broker farm boundaries. Nevertheless, v0.5.0 should be introduced as a canary before broad production rollout. In particular, validate native WTS behavior, SMB failure/recovery, PostgreSQL backup/restore, Guacamole extension loading and your exact PocketID group claims in your environment.

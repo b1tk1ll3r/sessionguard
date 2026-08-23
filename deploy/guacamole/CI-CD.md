@@ -37,8 +37,7 @@ services:
       SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
 ```
 
-Keep all existing Guacamole/PostgreSQL/header-auth environment variables and
-Traefik labels unchanged.
+Keep the existing Guacamole/PostgreSQL/header-auth environment variables. For SessionGuard 0.5.0 Access Auth, replace the old ForwardAuth middleware labels as described in `docs/ACCESS-AUTH.md`.
 
 ## Versioning
 
@@ -48,9 +47,9 @@ Traefik labels unchanged.
 git describe --tags --always | sed 's/^v//'
 ```
 
-A commit tagged `v0.4.0` therefore publishes `0.4.0`; later commits are named
-like `0.4.0-1-g0123456` until the next tag.
+A commit tagged `v0.5.0` therefore publishes `0.5.0`; later commits are named
+like `0.5.0-1-g0123456` until the next tag.
 
-The extension Dockerfile no longer hardcodes `sessionguard-guacamole-0.4.0.jar`.
+The extension Dockerfile no longer hardcodes `sessionguard-guacamole-0.5.0.jar`.
 Maven may therefore change the project version without requiring a Dockerfile
 change.
