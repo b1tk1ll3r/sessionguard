@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1 — Modal-first responsive Web UI
+
+- Master-WebUI neu strukturiert: Terminalserver öffnen in einem großen responsiven Arbeitsdialog statt in einer langen Inline-Detailspalte.
+- Serverdetails sind in Tabs für Übersicht, Sitzungen, Apps/Prozesse, Profile/Ereignisse und Konfiguration gegliedert.
+- Farms und Published Resources werden als kompakte Karten dargestellt; Anlegen/Bearbeiten erfolgt in eigenen Modals.
+- Resource-Editor behält RemoteApp-/Agent-Managed-Felder und dynamische Sichtbarkeit vollständig bei.
+- Agent-WebUI bündelt RemoteApps, Profil-Pipeline und Aktivitätslog in einer tab-basierten Betriebsansicht.
+- Lokale Agent-Policy wird in einem responsiven Modal bearbeitet und zeigt einen sichtbaren Dirty-State; die Übersichtsseite zeigt nur eine kompakte Policy-Zusammenfassung.
+- Mobile Modals wechseln auf Vollbild, Tabellen bleiben horizontal scrollbar, Formulare reduzieren sich responsiv auf eine Spalte.
+- Live-Refresh/Dirty-Guards bleiben erhalten; offene Policy-Eingaben werden weiterhin nicht vom 5-Sekunden-Refresh überschrieben.
+- Keine neue Runtime oder Build-Chain: weiterhin ausschließlich eingebettetes HTML/CSS/Vanilla-JavaScript.
+- Agent-Protokoll bleibt Version 4; keine Datenbank- oder API-Migration erforderlich.
+
 ## 0.5.0 — Integrated Guacamole Access Auth
 
 - SessionGuard Master now provides `/auth/verify` as a Traefik ForwardAuth endpoint for Guacamole.
