@@ -222,6 +222,18 @@ func validateOIDC(c model.OIDCConfig) error {
 	if c.Issuer == "" || c.ClientID == "" || c.RedirectURL == "" {
 		return errors.New("oidc issuer, client_id and redirect_url are required")
 	}
+	for label, raw := range map[string]string{"redirect_url": c.RedirectURL, "logout_redirect_url": c.LogoutRedirectURL} {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Hostname() == "" || u.Scheme == "" {
+			return fmt.Errorf("oidc.%s must be an absolute URL", label)
+		}
+		if c.SecureCookie && !strings.EqualFold(u.Scheme, "https") {
+			return fmt.Errorf("oidc.%s must use https when secure_cookie is enabled", label)
+		}
+	}
 	return nil
 }
 

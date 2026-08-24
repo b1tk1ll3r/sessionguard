@@ -30,9 +30,10 @@ type AccessSessionStore interface {
 }
 
 type accessPending struct {
-	Nonce     string
-	ReturnURL string
-	Exp       time.Time
+	Nonce        string
+	CodeVerifier string
+	ReturnURL    string
+	Exp          time.Time
 }
 
 type AccessManager struct {
@@ -100,9 +101,10 @@ func (m *AccessManager) Login(w http.ResponseWriter, r *http.Request) {
 	_ = m.sessions.CleanupAuthSessions(time.Now().UTC())
 	target := m.validReturnURL(r.URL.Query().Get("return"))
 	state, nonce := randomAccessToken(24), randomAccessToken(24)
+	verifier := oauth2.GenerateVerifier()
 	m.mu.Lock()
 	m.prunePendingLocked(time.Now())
-	m.pending[state] = accessPending{Nonce: nonce, ReturnURL: target, Exp: time.Now().Add(5 * time.Minute)}
+	m.pending[state] = accessPending{Nonce: nonce, CodeVerifier: verifier, ReturnURL: target, Exp: time.Now().Add(5 * time.Minute)}
 	m.mu.Unlock()
 
 	// One state cookie per login flow avoids the common multi-tab race where a
@@ -112,7 +114,7 @@ func (m *AccessManager) Login(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true, Secure: m.cfg.SecureCookie, SameSite: http.SameSiteLaxMode,
 		MaxAge: 300,
 	})
-	http.Redirect(w, r, m.oauth.AuthCodeURL(state, oidc.Nonce(nonce)), http.StatusFound)
+	http.Redirect(w, r, m.oauth.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), http.StatusFound)
 }
 
 func (m *AccessManager) Callback(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +144,7 @@ func (m *AccessManager) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tok, err := m.oauth.Exchange(r.Context(), r.URL.Query().Get("code"))
+	tok, err := m.oauth.Exchange(r.Context(), r.URL.Query().Get("code"), oauth2.VerifierOption(p.CodeVerifier))
 	if err != nil {
 		http.Error(w, "OIDC token exchange failed", http.StatusUnauthorized)
 		return
@@ -257,10 +259,9 @@ func (m *AccessManager) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := u.Query()
+	q.Set("client_id", m.cfg.ClientID)
 	if sess.IDToken != "" {
 		q.Set("id_token_hint", sess.IDToken)
-	} else {
-		q.Set("client_id", m.cfg.ClientID)
 	}
 	if target != "" {
 		q.Set("post_logout_redirect_uri", target)

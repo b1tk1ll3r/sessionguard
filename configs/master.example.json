@@ -11,6 +11,7 @@
     "client_id": "SESSIONGUARD-POCKETID-CLIENT-ID",
     "client_secret": "SET-BY-SESSIONGUARD_OIDC_CLIENT_SECRET",
     "redirect_url": "https://sessionguard.example.org/oidc/callback",
+    "logout_redirect_url": "https://sessionguard.example.org/",
     "admin_groups": [],
     "secure_cookie": true
   },

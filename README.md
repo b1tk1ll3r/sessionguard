@@ -111,7 +111,7 @@ This keeps PocketID / header authentication and the browser gateway separate fro
 - Append-only audit and session-history tables with retention and indexes.
 - JSONB control-plane state for agents, farms, resources, leases, policies and alerts.
 - JSON-file persistence remains available as a small single-node fallback / migration path.
-- PocketID / generic OIDC authentication.
+- PocketID / generic OIDC authentication with Authorization Code + PKCE (S256).
 - Group-to-role RBAC.
 - Policy version history and rollback for global, farm and agent policies.
 - Agent-initiated HTTPS heartbeats and command delivery only; no inbound management port from master to RDS hosts.

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -28,18 +29,26 @@ type User struct {
 }
 
 type pending struct {
-	Nonce string
-	Exp   time.Time
+	Nonce        string
+	CodeVerifier string
+	Exp          time.Time
+}
+
+type logoutSession struct {
+	IDToken string
+	Exp     time.Time
 }
 
 type Manager struct {
-	cfg      model.OIDCConfig
-	provider *oidc.Provider
-	verifier *oidc.IDTokenVerifier
-	oauth    oauth2.Config
-	key      []byte
-	mu       sync.Mutex
-	pending  map[string]pending
+	cfg        model.OIDCConfig
+	provider   *oidc.Provider
+	verifier   *oidc.IDTokenVerifier
+	oauth      oauth2.Config
+	endSession string
+	key        []byte
+	mu         sync.Mutex
+	pending    map[string]pending
+	logout     map[string]logoutSession
 }
 
 func New(ctx context.Context, cfg model.OIDCConfig) (*Manager, error) {
@@ -50,17 +59,23 @@ func New(ctx context.Context, cfg model.OIDCConfig) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	var discovery struct {
+		EndSessionEndpoint string `json:"end_session_endpoint"`
+	}
+	_ = p.Claims(&discovery)
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
 	return &Manager{
-		cfg:      cfg,
-		provider: p,
-		verifier: p.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
-		oauth:    oauth2.Config{ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, Endpoint: p.Endpoint(), RedirectURL: cfg.RedirectURL, Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"}},
-		key:      key,
-		pending:  map[string]pending{},
+		cfg:        cfg,
+		provider:   p,
+		verifier:   p.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
+		oauth:      oauth2.Config{ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, Endpoint: p.Endpoint(), RedirectURL: cfg.RedirectURL, Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"}},
+		endSession: discovery.EndSessionEndpoint,
+		key:        key,
+		pending:    map[string]pending{},
+		logout:     map[string]logoutSession{},
 	}, nil
 }
 
@@ -72,11 +87,13 @@ func randomURLSafe(n int) string {
 
 func (m *Manager) Login(w http.ResponseWriter, r *http.Request) {
 	state, nonce := randomURLSafe(24), randomURLSafe(24)
+	verifier := oauth2.GenerateVerifier()
 	m.mu.Lock()
-	m.pending[state] = pending{Nonce: nonce, Exp: time.Now().Add(5 * time.Minute)}
+	m.pruneLocked(time.Now())
+	m.pending[state] = pending{Nonce: nonce, CodeVerifier: verifier, Exp: time.Now().Add(5 * time.Minute)}
 	m.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: "sg_oidc_state", Value: state, Path: "/oidc/callback", HttpOnly: true, Secure: m.cfg.SecureCookie, SameSite: http.SameSiteLaxMode, MaxAge: 300})
-	http.Redirect(w, r, m.oauth.AuthCodeURL(state, oidc.Nonce(nonce)), http.StatusFound)
+	http.Redirect(w, r, m.oauth.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), http.StatusFound)
 }
 
 func (m *Manager) Callback(w http.ResponseWriter, r *http.Request) error {
@@ -96,7 +113,7 @@ func (m *Manager) Callback(w http.ResponseWriter, r *http.Request) error {
 	if !ok || time.Now().After(p.Exp) {
 		return errors.New("invalid or expired OIDC state")
 	}
-	tok, err := m.oauth.Exchange(r.Context(), r.URL.Query().Get("code"))
+	tok, err := m.oauth.Exchange(r.Context(), r.URL.Query().Get("code"), oauth2.VerifierOption(p.CodeVerifier))
 	if err != nil {
 		return err
 	}
@@ -126,6 +143,10 @@ func (m *Manager) Callback(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	m.mu.Lock()
+	m.pruneLocked(time.Now())
+	m.logout[value] = logoutSession{IDToken: raw, Exp: time.Unix(u.Exp, 0)}
+	m.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: "sg_session", Value: value, Path: "/", HttpOnly: true, Secure: m.cfg.SecureCookie, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 3600})
 	return nil
 }
@@ -147,8 +168,54 @@ func (m *Manager) allowed(u User) bool {
 }
 
 func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) {
+	var idToken string
+	if c, err := r.Cookie("sg_session"); err == nil && c.Value != "" {
+		m.mu.Lock()
+		m.pruneLocked(time.Now())
+		if sess, ok := m.logout[c.Value]; ok {
+			idToken = sess.IDToken
+			delete(m.logout, c.Value)
+		}
+		m.mu.Unlock()
+	}
 	http.SetCookie(w, &http.Cookie{Name: "sg_session", Value: "", Path: "/", HttpOnly: true, Secure: m.cfg.SecureCookie, SameSite: http.SameSiteLaxMode, MaxAge: -1})
-	http.Redirect(w, r, "/", http.StatusFound)
+
+	target := strings.TrimSpace(m.cfg.LogoutRedirectURL)
+	if target == "" {
+		target = "/"
+	}
+	if m.endSession == "" {
+		http.Redirect(w, r, target, http.StatusFound)
+		return
+	}
+	u, err := url.Parse(m.endSession)
+	if err != nil {
+		http.Redirect(w, r, target, http.StatusFound)
+		return
+	}
+	q := u.Query()
+	q.Set("client_id", m.cfg.ClientID)
+	if idToken != "" {
+		q.Set("id_token_hint", idToken)
+	}
+	if strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "http://") {
+		q.Set("post_logout_redirect_uri", target)
+	}
+	u.RawQuery = q.Encode()
+	http.Redirect(w, r, u.String(), http.StatusFound)
+}
+
+func (m *Manager) pruneLocked(now time.Time) {
+	for state, p := range m.pending {
+		if !now.Before(p.Exp) {
+			delete(m.pending, state)
+		}
+	}
+	for session, p := range m.logout {
+		if !now.Before(p.Exp) {
+			delete(m.logout, session)
+		}
+	}
 }
 
 func (m *Manager) sign(u User) (string, error) {

@@ -74,3 +74,17 @@ func TestValidateAccessAuthRequiresClientSecret(t *testing.T) {
 		t.Fatal("expected missing client secret validation error")
 	}
 }
+
+func TestValidateOIDCLogoutRedirectRequiresHTTPSForSecureCookie(t *testing.T) {
+	c := model.OIDCConfig{
+		Issuer: "https://id.example.org", ClientID: "client", ClientSecret: "secret",
+		RedirectURL: "https://director.example.org/oidc/callback", LogoutRedirectURL: "http://director.example.org/", SecureCookie: true,
+	}
+	if err := validateOIDC(c); err == nil {
+		t.Fatal("expected https validation error")
+	}
+	c.LogoutRedirectURL = "https://director.example.org/"
+	if err := validateOIDC(c); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -59,16 +59,18 @@ The browser cookie contains only a cryptographically-random opaque token. Sessio
 Configure the PocketID client with:
 
 ```text
+Public client: OFF
+PKCE: ON
 Callback URL:
 https://guacamole.example.org/_sessionguard/auth/oidc/callback
 
-Logout Callback / Back-channel Logout URL:
-https://guacamole.example.org/_sessionguard/auth/backchannel-logout
+Logout Callback URL (post_logout_redirect_uri):
+https://guacamole.example.org/
 ```
 
-PocketID can send OIDC back-channel logout tokens to the latter URL. SessionGuard verifies signature, issuer, audience, event claim, `iat`, `jti`, and `sid`/`sub`, rejects replayed logout tokens, and revokes matching local access sessions.
+The Pocket ID field **Logout Callback URLs** is the allow-list for `post_logout_redirect_uri`; do not put the SessionGuard back-channel endpoint into that field. If the provider exposes a dedicated Back-Channel Logout URI setting, SessionGuard's endpoint is `https://guacamole.example.org/_sessionguard/auth/backchannel-logout`.
 
-For browser-initiated logout SessionGuard uses the `end_session_endpoint` discovered from PocketID, removes the local session first, then returns to `logout_redirect_url`.
+For browser-initiated logout SessionGuard uses the `end_session_endpoint` discovered from PocketID, removes the local session first, sends `client_id` plus an `id_token_hint` when available, and then returns to `logout_redirect_url`.
 
 ## Traefik
 

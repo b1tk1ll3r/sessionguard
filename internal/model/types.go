@@ -5,12 +5,13 @@ import "time"
 const ProtocolVersion = 4
 
 type OIDCConfig struct {
-	Issuer       string   `json:"issuer"`
-	ClientID     string   `json:"client_id"`
-	ClientSecret string   `json:"client_secret"`
-	RedirectURL  string   `json:"redirect_url"`
-	AdminGroups  []string `json:"admin_groups,omitempty"`
-	SecureCookie bool     `json:"secure_cookie"`
+	Issuer            string   `json:"issuer"`
+	ClientID          string   `json:"client_id"`
+	ClientSecret      string   `json:"client_secret"`
+	RedirectURL       string   `json:"redirect_url"`
+	LogoutRedirectURL string   `json:"logout_redirect_url,omitempty"`
+	AdminGroups       []string `json:"admin_groups,omitempty"`
+	SecureCookie      bool     `json:"secure_cookie"`
 }
 
 // AccessAuthConfig configures the SessionGuard Master as a Traefik ForwardAuth

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.2 PKCE / logout hotfix
+
+- Added PKCE S256 (`code_challenge` / `code_verifier`) to both SessionGuard OIDC authorization-code flows.
+- Fixed the Go 1.22+ ServeMux root route conflict by registering `GET /{$}`.
+- Added RP-initiated logout for the primary Director/Admin OIDC flow using the discovered `end_session_endpoint`.
+- Guacamole access logout now sends `client_id` on every end-session request and `id_token_hint` when available.
+- Added `oidc.logout_redirect_url` and documented Pocket ID Logout Callback URL requirements.
+
+
 ## 0.5.2 — Public EdgeGuard security layer
 
 - Added `sessionguard-edgeguard`, a dependency-free Go edge pre-check for the public Caddy host.
