@@ -63,52 +63,12 @@
         });
     }
 
-    function recoverFromGuacamoleLogout() {
-        if (redirecting) {
-            return;
-        }
-
-        // Guacamole authentication tokens live in the selected webapp process.
-        // A worker failover/restart can therefore cause Guacamole to enter its
-        // logged-out state even though the upstream SessionGuard/PocketID
-        // browser session is still valid. Never turn that condition into a
-        // full IdP logout. Re-enter Guacamole and let header auth mint a fresh
-        // Guacamole token instead.
-        getAccessSessionStatus().then(function (response) {
-            if (response.ok) {
-                redirect(safeReturnURL());
-            }
-            else if (response.status === 401 || response.status === 403) {
-                redirect(loginURL());
-            }
-        }).catch(function () {
-            // Keep Guacamole's normal logged-out UI visible during a transient
-            // SessionGuard outage instead of forcing any logout/login loop.
-        });
-    }
-
-    function watchForGuacamoleLoggedOutState() {
-        function loggedOutModalPresent() {
-            return document.querySelector('.logged-out-modal') !== null;
-        }
-
-        if (loggedOutModalPresent()) {
-            recoverFromGuacamoleLogout();
-            return;
-        }
-
-        var observer = new MutationObserver(function () {
-            if (loggedOutModalPresent()) {
-                observer.disconnect();
-                recoverFromGuacamoleLogout();
-            }
-        });
-
-        observer.observe(document.documentElement, {
-            childList: true,
-            subtree: true
-        });
-    }
+    // Guacamole owns its own authentication state. Do not automatically
+    // reload the SPA merely because Guacamole is in its logged-out state.
+    // With header authentication, Guacamole's built-in "Login again" action
+    // can re-authenticate against the next request. Automatic reload here
+    // creates a / -> /#/ -> / loop while the SessionGuard access session is
+    // still perfectly valid.
 
     function watchForExplicitLogout() {
         // Guacamole assigns the CSS class "logout" to its explicit logout
@@ -133,7 +93,6 @@
 
     function start() {
         watchForExplicitLogout();
-        watchForGuacamoleLoggedOutState();
         checkAccessSession();
         window.setInterval(checkAccessSession, STATUS_INTERVAL_MS);
     }
