@@ -70,7 +70,7 @@ func (a *App) Run(ctx context.Context) error {
 		w.Header().Set("Cache-Control", "no-store, max-age=0")
 		_, _ = fmt.Fprint(w, masterJS)
 	})
-	mux.Handle("GET /", a.auth.Require(http.HandlerFunc(a.masterPage)))
+	mux.Handle("GET /{$}", a.auth.Require(http.HandlerFunc(a.masterPage)))
 	mux.Handle("GET /api/v1/me", a.auth.Require(http.HandlerFunc(a.me)))
 	mux.Handle("GET /api/v1/dashboard", a.auth.Require(http.HandlerFunc(a.dashboard)))
 	mux.Handle("GET /api/v1/agents/{id}", a.auth.Require(http.HandlerFunc(a.agentDetail)))
