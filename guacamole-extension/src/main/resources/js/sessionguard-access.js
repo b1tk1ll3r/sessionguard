@@ -31,44 +31,76 @@
         window.location.replace(url);
     }
 
-    function checkAccessSession() {
-        if (redirecting || !window.fetch) {
-            return;
+    function getAccessSessionStatus() {
+        if (!window.fetch) {
+            return Promise.reject(new Error('fetch unavailable'));
         }
 
-        window.fetch(AUTH_BASE + '/status', {
+        return window.fetch(AUTH_BASE + '/status', {
             method: 'GET',
             credentials: 'same-origin',
             cache: 'no-store',
             headers: { 'Accept': 'application/json' }
-        }).then(function (response) {
+        });
+    }
+
+    function checkAccessSession() {
+        if (redirecting) {
+            return;
+        }
+
+        getAccessSessionStatus().then(function (response) {
             if (response.status === 401 || response.status === 403) {
-                // Navigating away also closes Guacamole WebSocket/tunnel
-                // connections, so a revoked PocketID/SessionGuard access
-                // session cannot keep an already-open browser client alive.
+                // The SessionGuard/PocketID access session itself is no longer
+                // valid. Start a fresh OIDC flow, but do not treat this as an
+                // explicit logout request.
                 redirect(loginURL());
             }
         }).catch(function () {
             // A transient auth-status outage must not destroy an active RDP
-            // session. Traefik still fail-closes all new HTTP requests through
-            // ForwardAuth; retry this browser-side check on the next interval.
+            // session. ForwardAuth still fail-closes new requests and this
+            // browser-side check will retry on the next interval.
         });
     }
 
-    function watchForGuacamoleLogout() {
+    function recoverFromGuacamoleLogout() {
+        if (redirecting) {
+            return;
+        }
+
+        // Guacamole authentication tokens live in the selected webapp process.
+        // A worker failover/restart can therefore cause Guacamole to enter its
+        // logged-out state even though the upstream SessionGuard/PocketID
+        // browser session is still valid. Never turn that condition into a
+        // full IdP logout. Re-enter Guacamole and let header auth mint a fresh
+        // Guacamole token instead.
+        getAccessSessionStatus().then(function (response) {
+            if (response.ok) {
+                redirect(safeReturnURL());
+            }
+            else if (response.status === 401 || response.status === 403) {
+                redirect(loginURL());
+            }
+        }).catch(function () {
+            // Keep Guacamole's normal logged-out UI visible during a transient
+            // SessionGuard outage instead of forcing any logout/login loop.
+        });
+    }
+
+    function watchForGuacamoleLoggedOutState() {
         function loggedOutModalPresent() {
             return document.querySelector('.logged-out-modal') !== null;
         }
 
         if (loggedOutModalPresent()) {
-            redirect(logoutURL());
+            recoverFromGuacamoleLogout();
             return;
         }
 
         var observer = new MutationObserver(function () {
             if (loggedOutModalPresent()) {
                 observer.disconnect();
-                redirect(logoutURL());
+                recoverFromGuacamoleLogout();
             }
         });
 
@@ -78,8 +110,30 @@
         });
     }
 
+    function watchForExplicitLogout() {
+        // Guacamole assigns the CSS class "logout" to its explicit logout
+        // actions. Observe the user's click rather than the generic
+        // .logged-out-modal state: the latter can also result from worker
+        // failover, token loss, expiry or other non-user-initiated events.
+        document.addEventListener('click', function (event) {
+            var element = event.target;
+            if (!element || typeof element.closest !== 'function') {
+                return;
+            }
+
+            if (element.closest('.logout')) {
+                // Let Guacamole's own click handler invalidate its local auth
+                // token first, then perform SessionGuard/PocketID logout.
+                window.setTimeout(function () {
+                    redirect(logoutURL());
+                }, 150);
+            }
+        }, false);
+    }
+
     function start() {
-        watchForGuacamoleLogout();
+        watchForExplicitLogout();
+        watchForGuacamoleLoggedOutState();
         checkAccessSession();
         window.setInterval(checkAccessSession, STATUS_INTERVAL_MS);
     }

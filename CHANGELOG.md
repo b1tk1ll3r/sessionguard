@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.2 Guacamole logout/recovery follow-up
+
+- Fixed an over-aggressive Guacamole browser helper which treated every Guacamole `loggedOut` state as an explicit user logout.
+- Explicit clicks on Guacamole logout actions still perform full SessionGuard/Pocket ID RP-initiated logout.
+- Guacamole-only token loss (for example after a worker restart/failover) now preserves the SessionGuard/Pocket ID session and re-enters Guacamole through header authentication.
+
 ## v0.5.2 PKCE / logout hotfix
 
 - Added PKCE S256 (`code_challenge` / `code_verifier`) to both SessionGuard OIDC authorization-code flows.

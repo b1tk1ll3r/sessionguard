@@ -124,7 +124,7 @@ Use the SessionGuard-built Guacamole image from 0.5.0 or later. The extension co
 
 - every 30 seconds it checks `/_sessionguard/auth/status`;
 - if the server-side SessionGuard access session has been revoked/expired, it navigates away from Guacamole, closing browser tunnels/WebSockets;
-- after Guacamole's own logout reaches its logged-out state, it redirects to `/_sessionguard/auth/logout`, which also ends the SessionGuard/PocketID session.
+- an explicit click on a Guacamole logout action redirects to `/_sessionguard/auth/logout`, which also ends the SessionGuard/PocketID session; generic Guacamole token loss/failover does not trigger IdP logout.
 
 ## Migration from traefik-forward-auth
 
@@ -143,4 +143,4 @@ Do not run both auth middlewares on the Guacamole router. A safe migration is:
 - Valid access session: Guacamole receives exactly the PocketID username through `X-Guacamole-User`.
 - Session older than `session_hours`: denied even if Guacamole still holds an old auth token.
 - PocketID back-channel logout: corresponding SessionGuard sessions are revoked immediately; the browser-side poll closes an already-open Guacamole page within about 30 seconds.
-- Guacamole logout button: Guacamole destroys its own token, then the SessionGuard helper performs full OIDC logout.
+- Guacamole logout button: an explicit user click performs full SessionGuard/PocketID OIDC logout. If Guacamole merely loses its local token (for example after worker failover/restart), SessionGuard keeps the upstream access session and re-enters Guacamole through header auth.
