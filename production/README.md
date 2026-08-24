@@ -135,3 +135,7 @@ nameserver/match-domain for your AD/internal DNS zone.
 Because the three workers are stateless apart from the shared `drive` volume and
 shared PostgreSQL state, drain one worker at the Caddy/NetBird level, update it,
 then return it to service. Never create three independent Guacamole databases.
+
+## Public edge security (v0.5.2)
+
+The `public-vps/` stack now contains SessionGuard EdgeGuard in front of both public hosts. EdgeGuard provides CIDR blacklisting, NAT-friendly rate limiting, scanner detection, bounded per-IP state, persistent temporary bans and localhost-only metrics. The Caddy example disables its admin API, uses bounded/sampled access logs, pins Caddy 2.11.4, and exposes only the proxy service publicly. See `EDGE-SECURITY.md`.

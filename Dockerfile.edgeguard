@@ -1,0 +1,21 @@
+FROM golang:1.23-bookworm AS build
+WORKDIR /src
+COPY go.mod ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/sessionguard-edgeguard ./cmd/edgeguard
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S edgeguard \
+    && adduser -S -G edgeguard edgeguard \
+    && mkdir -p /etc/sessionguard-edgeguard /var/lib/sessionguard-edgeguard \
+    && chown -R edgeguard:edgeguard /etc/sessionguard-edgeguard /var/lib/sessionguard-edgeguard
+COPY --from=build /out/sessionguard-edgeguard /usr/local/bin/sessionguard-edgeguard
+USER edgeguard
+VOLUME ["/var/lib/sessionguard-edgeguard"]
+EXPOSE 9081
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD wget -q -O /dev/null http://127.0.0.1:9081/healthz || exit 1
+ENTRYPOINT ["/usr/local/bin/sessionguard-edgeguard"]
+CMD ["-config", "/etc/sessionguard-edgeguard/edgeguard.json"]

@@ -2,9 +2,13 @@
 
 SessionGuard is a Go-based **RDS control plane** for Windows Remote Desktop Session Hosts. It is designed to complement Apache Guacamole: Guacamole remains the HTML5/RDP gateway, while SessionGuard provides Citrix-like broker, Director, policy, profile-lifecycle and operations functions.
 
-**Current development version: 0.5.1 (modal-first responsive Web UI + integrated Guacamole Access Auth)**
+**Current development version: 0.5.2 (Public EdgeGuard + modal-first responsive Web UI + integrated Guacamole Access Auth)**
 
 > SessionGuard is not an ICA/HDX implementation and does not replace the Windows RDS runtime. It deliberately reuses standard RDP/WTS, Guacamole and PocketID/OIDC.
+
+## 0.5.2 Public EdgeGuard
+
+The optional public-VPS deployment now includes `sessionguard-edgeguard`, a small Go service called by Caddy before requests reach SessionGuard or Guacamole. It provides static CIDR blacklisting, global/per-IP/endpoint token-bucket limits, scanner-path detection, persistent temporary bans, method/host/URI guards and local metrics. Caddy is additionally hardened with strict SNI/Host matching, a request-header timeout and smaller header ceiling. This protects application backends against common Internet abuse; provider-side DDoS filtering is still required for attacks that saturate the network link. See `docs/EDGE-SECURITY.md` and `deploy/public-vps-netbird/`.
 
 ## 0.5.1 Web UI refresh
 

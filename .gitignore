@@ -1,4 +1,5 @@
 /bin/
+*.exe
 *.log
 state.json
 master.json

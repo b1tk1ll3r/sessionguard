@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.2 — Public EdgeGuard security layer
+
+- Added `sessionguard-edgeguard`, a dependency-free Go edge pre-check for the public Caddy host.
+- Static IPv4/IPv6/CIDR blacklist with automatic reload.
+- Global and per-IP token-bucket rate limiting plus endpoint-specific OIDC/login limits.
+- NAT-safe defaults: ordinary rate-limit hits do not automatically ban a shared public address.
+- Scanner/exploit path detection and persistent temporary auto-bans for clearly hostile behavior.
+- Bounded per-IP state table prevents rotating-source floods from causing unbounded memory growth; ban persistence is write-debounced to avoid I/O amplification.
+- Blocks CONNECT/TRACE/TRACK, validates allowed public hosts and rejects malformed/oversized URIs.
+- Local `/healthz` and Prometheus-style `/metrics` endpoints for EdgeGuard.
+- Added hardened public Caddy deployment: strict SNI/Host matching, 10s header timeout, 64 KiB header ceiling, HTTP/1.1+HTTP/2 only and conservative response security headers.
+- Caddy admin API is disabled on the dedicated edge; access logs use bounded file rotation and high-load sampling to reduce log-amplification risk.
+- Public-VPS example pins Caddy 2.11.4 instead of an unqualified major tag.
+- Public Caddy now hides SessionGuard `/metrics` and broker endpoints; Guacamole workers continue to use broker APIs directly over NetBird.
+- Added a dedicated `Dockerfile.edgeguard`, public-VPS Compose stack and CI image publication.
+- No Master/Agent protocol or database migration; Agent protocol remains version 4.
+
 ## 0.5.1 — Modal-first responsive Web UI
 
 - Master-WebUI neu strukturiert: Terminalserver öffnen in einem großen responsiven Arbeitsdialog statt in einer langen Inline-Detailspalte.

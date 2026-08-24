@@ -69,6 +69,19 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/${{ steps.meta.outputs.REPO_NAME }}:${{ steps.meta.outputs.REPO_VERSION }}
             ${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/${{ steps.meta.outputs.REPO_NAME }}:${{ env.DOCKER_LATEST }}
 
+      - name: Build and push SessionGuard EdgeGuard
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.edgeguard
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.REPO_VERSION }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/${{ steps.meta.outputs.REPO_NAME }}-edgeguard:${{ steps.meta.outputs.REPO_VERSION }}
+            ${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/${{ steps.meta.outputs.REPO_NAME }}-edgeguard:${{ env.DOCKER_LATEST }}
+
       # Export exactly the same extension that is embedded into the Guacamole image.
       # The dedicated target avoids depending on the Maven project version in CI.
       - name: Build Guacamole Extension JAR
@@ -165,6 +178,9 @@ jobs:
 
           Guacamole image:
             ${REGISTRY}/${DOCKER_ORG}/${{ steps.meta.outputs.GUAC_IMAGE }}:${{ steps.meta.outputs.REPO_VERSION }}
+
+          EdgeGuard image:
+            ${REGISTRY}/${DOCKER_ORG}/${{ steps.meta.outputs.REPO_NAME }}-edgeguard:${{ steps.meta.outputs.REPO_VERSION }}
 
           Extension package:
             ${GITEA_API_BASE}/api/packages/${DOCKER_ORG}/generic/${{ steps.meta.outputs.EXT_PACKAGE }}/${{ steps.meta.outputs.REPO_VERSION }}/sessionguard-guacamole.jar

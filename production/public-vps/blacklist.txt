@@ -1,0 +1,7 @@
+# Static IP/CIDR blacklist. One IPv4/IPv6 address or CIDR per line.
+# Changes are picked up automatically (default: within 15 seconds).
+#
+# Examples:
+# 203.0.113.44
+# 198.51.100.0/24
+# 2001:db8:1234::/48

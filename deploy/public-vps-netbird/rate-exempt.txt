@@ -1,0 +1,6 @@
+# Optional CIDRs which bypass per-IP and endpoint rate limits.
+# They are NOT exempt from the static blacklist, host/method/scanner checks,
+# or the global overload limit.
+#
+# Use this only for known NAT gateways/monitoring systems if necessary.
+# 192.0.2.10
