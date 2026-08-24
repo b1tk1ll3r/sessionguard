@@ -1,0 +1,82 @@
+services:
+  # Official NetBird Docker client pattern. Because this peer runs on the
+  # Docker host network, it can act as a routing peer for GUAC_DOCKER_SUBNET.
+  netbird:
+    image: netbirdio/netbird:${NETBIRD_VERSION:-latest}
+    container_name: netbird-${WORKER_NAME}
+    hostname: ${WORKER_NAME}
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - SYS_RESOURCE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      NB_SETUP_KEY: ${NETBIRD_SETUP_KEY:?NETBIRD_SETUP_KEY is required}
+      NB_MANAGEMENT_URL: ${NETBIRD_MANAGEMENT_URL:?NETBIRD_MANAGEMENT_URL is required}
+      NB_LOG_LEVEL: ${NETBIRD_LOG_LEVEL:-info}
+    volumes:
+      - netbird-client:/var/lib/netbird
+
+  guacd:
+    image: guacamole/guacd:${GUACAMOLE_VERSION:-1.6.0}
+    container_name: ${WORKER_NAME}-guacd
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: ${GUACD_LOG_LEVEL:-info}
+    networks:
+      guac_internal:
+        ipv4_address: ${GUACD_IP}
+    volumes:
+      - drive:/drive
+
+  guacamole:
+    # Must contain the SessionGuard Broker + Access-Auth JS extension.
+    image: ${SESSIONGUARD_GUAC_IMAGE:?SESSIONGUARD_GUAC_IMAGE is required}
+    container_name: ${WORKER_NAME}-guacamole
+    restart: unless-stopped
+    depends_on:
+      guacd:
+        condition: service_started
+    environment:
+      WEBAPP_CONTEXT: ROOT
+      GUACD_HOSTNAME: ${GUACD_IP}
+      GUACD_PORT: "4822"
+
+      # SessionGuard Broker over the routed private SessionGuard Docker subnet.
+      SESSIONGUARD_MASTER_URL: http://${SESSIONGUARD_IP}:8080
+      SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY:?SESSIONGUARD_BROKER_API_KEY is required}
+      SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
+
+      # ALL Guacamole workers use the SAME PostgreSQL database.
+      POSTGRESQL_ENABLED: "true"
+      POSTGRESQL_HOSTNAME: ${GUAC_DB_IP}
+      POSTGRESQL_PORT: "5432"
+      POSTGRESQL_DATABASE: ${GUAC_DB_NAME:-guacamole_db}
+      POSTGRESQL_USERNAME: ${GUAC_DB_USER:-guacamole_user}
+      POSTGRESQL_PASSWORD: ${GUAC_DB_PASSWORD:?GUAC_DB_PASSWORD is required}
+      POSTGRESQL_AUTO_CREATE_ACCOUNTS: "true"
+
+      # PocketID is NOT configured in Guacamole. The public Caddy calls
+      # SessionGuard ForwardAuth and injects this trusted identity header.
+      HTTP_AUTH_ENABLED: "true"
+      HTTP_AUTH_HEADER: X-Guacamole-User
+      REMOTE_IP_VALVE_ENABLED: "true"
+    networks:
+      guac_internal:
+        ipv4_address: ${GUAC_APP_IP}
+    volumes:
+      - drive:/drive
+
+networks:
+  guac_internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${GUAC_DOCKER_SUBNET}
+
+volumes:
+  netbird-client:
+  drive:

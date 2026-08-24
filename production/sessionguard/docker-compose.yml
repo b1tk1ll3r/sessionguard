@@ -1,0 +1,123 @@
+services:
+  netbird:
+    image: netbirdio/netbird:${NETBIRD_VERSION:-latest}
+    container_name: netbird-sessionguard01
+    hostname: ${NETBIRD_PEER_NAME:-sessionguard01}
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - SYS_RESOURCE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      NB_SETUP_KEY: ${NETBIRD_SETUP_KEY:?NETBIRD_SETUP_KEY is required}
+      NB_MANAGEMENT_URL: ${NETBIRD_MANAGEMENT_URL:?NETBIRD_MANAGEMENT_URL is required}
+      NB_LOG_LEVEL: ${NETBIRD_LOG_LEVEL:-info}
+    volumes:
+      - netbird-client:/var/lib/netbird
+
+  sessionguard-postgres:
+    image: postgres:${POSTGRES_VERSION:-17}
+    container_name: sessionguard-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${SESSIONGUARD_DB_NAME:-sessionguard}
+      POSTGRES_USER: ${SESSIONGUARD_DB_USER:-sessionguard}
+      POSTGRES_PASSWORD: ${SESSIONGUARD_DB_PASSWORD:?SESSIONGUARD_DB_PASSWORD is required}
+    volumes:
+      - sessionguard-postgres:/var/lib/postgresql/data
+    networks:
+      sessionguard_internal:
+        ipv4_address: ${SESSIONGUARD_DB_IP}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  sessionguard-master:
+    image: ${SESSIONGUARD_IMAGE:?SESSIONGUARD_IMAGE is required}
+    container_name: sessionguard
+    restart: unless-stopped
+    depends_on:
+      sessionguard-postgres:
+        condition: service_healthy
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SESSIONGUARD_DATABASE_URL: postgres://${SESSIONGUARD_DB_USER:-sessionguard}:${SESSIONGUARD_DB_PASSWORD}@${SESSIONGUARD_DB_IP}:5432/${SESSIONGUARD_DB_NAME:-sessionguard}?sslmode=disable
+      SESSIONGUARD_ENROLLMENT_TOKEN: ${SESSIONGUARD_ENROLLMENT_TOKEN:?SESSIONGUARD_ENROLLMENT_TOKEN is required}
+      SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY:?SESSIONGUARD_BROKER_API_KEY is required}
+      SESSIONGUARD_OIDC_CLIENT_SECRET: ${SESSIONGUARD_OIDC_CLIENT_SECRET:?SESSIONGUARD_OIDC_CLIENT_SECRET is required}
+      SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET: ${SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET:?SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET is required}
+      SESSIONGUARD_ALERT_WEBHOOK_URL: ${SESSIONGUARD_ALERT_WEBHOOK_URL:-}
+    volumes:
+      - ./master.json:/etc/sessionguard/master.json:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks:
+      sessionguard_internal:
+        ipv4_address: ${SESSIONGUARD_APP_IP}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Generates the official Guacamole PostgreSQL schema once into a named volume.
+  guac-init:
+    image: guacamole/guacamole:${GUACAMOLE_VERSION:-1.6.0}
+    container_name: guac-init
+    restart: "no"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        /opt/guacamole/bin/initdb.sh --postgresql > /initdb/001-guacamole.sql
+        test -s /initdb/001-guacamole.sql
+    volumes:
+      - guac-init:/initdb
+
+  # One shared Guacamole DB for ALL guac01/02/03 workers.
+  guacamole-postgres:
+    image: postgres:${POSTGRES_VERSION:-17}
+    container_name: guacamole-postgres
+    restart: unless-stopped
+    depends_on:
+      guac-init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: ${GUAC_DB_NAME:-guacamole_db}
+      POSTGRES_USER: ${GUAC_DB_USER:-guacamole_user}
+      POSTGRES_PASSWORD: ${GUAC_DB_PASSWORD:?GUAC_DB_PASSWORD is required}
+    volumes:
+      - guacamole-postgres:/var/lib/postgresql/data
+      - guac-init:/docker-entrypoint-initdb.d:ro
+    networks:
+      sessionguard_internal:
+        ipv4_address: ${GUAC_DB_IP}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+networks:
+  sessionguard_internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${SESSIONGUARD_DOCKER_SUBNET}
+
+volumes:
+  netbird-client:
+  sessionguard-postgres:
+  guacamole-postgres:
+  guac-init:

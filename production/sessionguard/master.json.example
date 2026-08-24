@@ -1,0 +1,72 @@
+{
+  "listen": ":8080",
+  "public_url": "https://sessionguard.hilden.info",
+  "data_file": "/var/lib/sessionguard/master.json",
+  "database_url": "",
+  "enrollment_token": "SET-BY-SESSIONGUARD_ENROLLMENT_TOKEN",
+  "offline_after_seconds": 30,
+  "history_limit": 50000,
+
+  "oidc": {
+    "issuer": "https://auth.hilden.info",
+    "client_id": "POCKETID-SESSIONGUARD-ADMIN-CLIENT-ID",
+    "client_secret": "SET-BY-SESSIONGUARD_OIDC_CLIENT_SECRET",
+    "redirect_url": "https://sessionguard.hilden.info/oidc/callback",
+    "admin_groups": [],
+    "secure_cookie": true
+  },
+
+  "access_auth": {
+    "enabled": true,
+    "issuer": "https://auth.hilden.info",
+    "client_id": "POCKETID-GUACAMOLE-ACCESS-CLIENT-ID",
+    "client_secret": "SET-BY-SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET",
+    "redirect_url": "https://ts.hilden.info/_sessionguard/auth/oidc/callback",
+    "logout_redirect_url": "https://ts.hilden.info/",
+    "cookie_name": "sg_access_session",
+    "cookie_domain": "",
+    "secure_cookie": true,
+    "session_hours": 8,
+    "username_claim": "preferred_username",
+    "allowed_groups": [],
+    "allowed_hosts": [
+      "ts.hilden.info"
+    ]
+  },
+
+  "rbac": {
+    "default_role": "viewer",
+    "groups": {
+      "sessionguard-admins": ["admin"],
+      "sessionguard-helpdesk": ["helpdesk"],
+      "sessionguard-operators": ["operator"],
+      "sessionguard-policy": ["policy_admin"],
+      "sessionguard-profile": ["profile_admin"],
+      "sessionguard-auditors": ["auditor"]
+    }
+  },
+
+  "broker": {
+    "enabled": true,
+    "api_key": "SET-BY-SESSIONGUARD_BROKER_API_KEY",
+    "lease_seconds": 900,
+    "min_health_score": 60,
+    "reconnect_existing": true,
+    "single_session_per_user": true,
+    "default_farm_id": ""
+  },
+
+  "alerts": {
+    "enabled": true,
+    "webhook_url": "",
+    "cpu_percent": 90,
+    "memory_percent": 90,
+    "disk_free_gb": 10,
+    "health_score": 50,
+    "offline_seconds": 120,
+    "profile_failures": 3,
+    "disconnected_sessions": 20,
+    "logon_duration_seconds": 30,
+    "notification_min_interval_seconds": 900
+  }
+}
