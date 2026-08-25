@@ -1,0 +1,280 @@
+name: Windows Agent Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release-Version, z. B. 0.5.3"
+        required: true
+        default: "0.5.3"
+      prerelease:
+        description: "Als Pre-Release markieren (true/false)"
+        required: true
+        default: "false"
+
+permissions:
+  code: read
+  releases: write
+
+jobs:
+  windows-agent-release:
+    name: Build and release Windows Agent
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: false
+
+      - name: Validate release input
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "Ungültige Version: $VERSION" >&2
+            echo "Erwartet wird z. B. 0.5.3 oder 0.5.3-rc1." >&2
+            exit 1
+          fi
+
+          case "${{ inputs.prerelease }}" in
+            true|false) ;;
+            *)
+              echo "prerelease muss true oder false sein." >&2
+              exit 1
+              ;;
+          esac
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "asset_base=sessionguard-agent-windows-amd64-v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set Agent version
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("internal/agent/agent.go")
+          text = path.read_text(encoding="utf-8")
+
+          updated, count = re.subn(
+              r'const Version = "[^"]+"',
+              f'const Version = "{os.environ["VERSION"]}"',
+              text,
+              count=1,
+          )
+
+          if count != 1:
+              raise SystemExit("Konnte internal/agent/agent.go: const Version nicht eindeutig ersetzen.")
+
+          path.write_text(updated, encoding="utf-8")
+          PY
+
+          grep -n 'const Version' internal/agent/agent.go
+
+      - name: Download Go modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod download
+
+      - name: Build Windows Agent
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          set -euo pipefail
+          mkdir -p dist/package
+          go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o dist/package/sessionguard-agent.exe \
+            ./cmd/agent
+
+      - name: Package Windows Agent
+        id: package
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          ASSET_BASE: ${{ steps.meta.outputs.asset_base }}
+        run: |
+          set -euo pipefail
+
+          cp scripts/install-agent.ps1 dist/package/
+          cp configs/agent.example.json dist/package/
+
+          cat > dist/package/VERSION.txt <<EOF
+          SessionGuard Windows Agent
+          Version: ${VERSION}
+          Architecture: windows/amd64
+          Commit: ${GITHUB_SHA}
+          EOF
+
+          (
+            cd dist/package
+            sha256sum sessionguard-agent.exe > SHA256SUMS.txt
+          )
+
+          python3 - <<'PY'
+          import os
+          import zipfile
+          from pathlib import Path
+
+          src = Path("dist/package")
+          dst = Path("dist") / f'{os.environ["ASSET_BASE"]}.zip'
+
+          with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_DEFLATED) as z:
+              for path in sorted(src.iterdir()):
+                  z.write(path, path.name)
+          PY
+
+          cp dist/package/sessionguard-agent.exe "dist/${ASSET_BASE}.exe"
+
+          (
+            cd dist
+            sha256sum \
+              "${ASSET_BASE}.exe" \
+              "${ASSET_BASE}.zip" \
+              > "${ASSET_BASE}.sha256"
+          )
+
+          echo "exe=dist/${ASSET_BASE}.exe" >> "$GITHUB_OUTPUT"
+          echo "zip=dist/${ASSET_BASE}.zip" >> "$GITHUB_OUTPUT"
+          echo "sha=dist/${ASSET_BASE}.sha256" >> "$GITHUB_OUTPUT"
+
+          ls -lh dist/
+
+      - name: Create Gitea Release
+        id: release
+        shell: bash
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          export RELEASE_BODY="Automatisch erzeugter Windows-Agent-Release.
+
+          - Plattform: Windows amd64
+          - Version: ${VERSION}
+          - Commit: ${GITHUB_SHA}
+          - Ausgelöst von: ${GITHUB_ACTOR}
+
+          Die SHA256-Prüfsummen liegen als separates Release-Asset bei."
+
+          python3 - <<'PY'
+          import json
+          import os
+
+          payload = {
+              "tag_name": os.environ["TAG"],
+              "target_commitish": os.environ["GITHUB_SHA"],
+              "name": f'SessionGuard Windows Agent {os.environ["TAG"]}',
+              "body": os.environ["RELEASE_BODY"],
+              "draft": False,
+              "prerelease": os.environ["PRERELEASE"].lower() == "true",
+          }
+
+          with open("/tmp/sessionguard-release.json", "w", encoding="utf-8") as f:
+              json.dump(payload, f)
+          PY
+
+          HTTP_CODE="$(
+            curl --silent --show-error \
+              --output /tmp/sessionguard-release-response.json \
+              --write-out '%{http_code}' \
+              --request POST \
+              --header "Authorization: token ${GITEA_TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data @/tmp/sessionguard-release.json \
+              "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases"
+          )"
+
+          if [ "$HTTP_CODE" != "201" ]; then
+            cat /tmp/sessionguard-release-response.json || true
+            echo "Gitea Release konnte nicht erstellt werden (HTTP ${HTTP_CODE})." >&2
+            echo "Existiert der Tag ${TAG} bereits oder fehlen dem GITEA_TOKEN Release-Schreibrechte?" >&2
+            exit 1
+          fi
+
+          RELEASE_ID="$(
+            python3 - <<'PY'
+          import json
+          with open("/tmp/sessionguard-release-response.json", encoding="utf-8") as f:
+              print(json.load(f)["id"])
+          PY
+          )"
+
+          RELEASE_URL="$(
+            python3 - <<'PY'
+          import json
+          with open("/tmp/sessionguard-release-response.json", encoding="utf-8") as f:
+              print(json.load(f).get("html_url", ""))
+          PY
+          )"
+
+          echo "id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
+          echo "url=${RELEASE_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Release Assets
+        shell: bash
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
+          EXE: ${{ steps.package.outputs.exe }}
+          ZIP: ${{ steps.package.outputs.zip }}
+          SHA: ${{ steps.package.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          for FILE in "$EXE" "$ZIP" "$SHA"; do
+            NAME="$(basename "$FILE")"
+            echo "Uploading ${NAME} ..."
+
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Authorization: token ${GITEA_TOKEN}" \
+              --form "attachment=@${FILE}" \
+              "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${NAME}"
+
+            echo
+          done
+
+      - name: Release summary
+        shell: bash
+        run: |
+          cat <<EOF
+          Windows Agent Release erstellt.
+
+          Version:
+            ${{ steps.meta.outputs.tag }}
+
+          Release:
+            ${{ steps.release.outputs.url }}
+
+          Assets:
+            ${{ steps.meta.outputs.asset_base }}.exe
+            ${{ steps.meta.outputs.asset_base }}.zip
+            ${{ steps.meta.outputs.asset_base }}.sha256
+          EOF
