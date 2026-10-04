@@ -1,0 +1,84 @@
+name: ci
+
+# main and v* tags run CI through release.yml (workflow_call) before publishing.
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        if: runner.os == 'Linux'
+        run: |
+          unformatted="$(gofmt -l ./cmd ./internal)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt required for:"; echo "$unformatted"; exit 1
+          fi
+
+      # The Windows syscall wrappers trigger known unsafeptr false positives,
+      # so full vet runs for Linux; Windows still gets the go test vet subset.
+      - name: go vet
+        if: runner.os == 'Linux'
+        run: go vet ./...
+
+      - name: Cross-build Windows agent
+        if: runner.os == 'Linux'
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: go build ./...
+
+      # Runs the junction/symlink profile tests on a real Windows host.
+      - name: go test
+        run: go test ./...
+
+  guacamole-extension:
+    name: Guacamole extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Maven package
+        working-directory: guacamole-extension
+        run: mvn -B -ntp package
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: JavaScript syntax
+        run: |
+          for f in guacamole-extension/src/main/resources/js/*.js; do
+            node --check "$f"
+          done
+          node scripts/check-embedded-js.mjs

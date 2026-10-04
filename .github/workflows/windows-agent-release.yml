@@ -1,0 +1,159 @@
+# Manually builds the Windows Agent and publishes it as GitHub Release
+# v<version> (exe, zip with install script/example config, SHA256 sums).
+# If the release already exists (e.g. created by release.yml for the same
+# tag), the agent assets are added to it.
+#
+# Note: a tag created here with GITHUB_TOKEN does not trigger release.yml
+# (GitHub prevents recursive runs). Push the tag yourself first if the
+# container images for that version should be built as well.
+name: windows-agent-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.6.0"
+        required: true
+      prerelease:
+        description: "Mark as pre-release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  windows-agent-release:
+    name: Build and release Windows Agent
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Inputs are passed through env (never interpolated into the script) so
+      # that a crafted version string cannot inject shell commands.
+      - name: Validate input
+        id: meta
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_VERSION#v}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "Invalid version: $VERSION (expected e.g. 0.6.0 or 0.6.0-rc1)" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "asset_base=sessionguard-agent-windows-amd64-v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set Agent version
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          path = Path("internal/agent/agent.go")
+          text, count = re.subn(r'const Version = "[^"]+"', f'const Version = "{os.environ["VERSION"]}"', path.read_text(encoding="utf-8"), count=1)
+          if count != 1:
+              raise SystemExit("could not replace const Version in internal/agent/agent.go")
+          path.write_text(text, encoding="utf-8")
+          PY
+          grep -n 'const Version' internal/agent/agent.go
+
+      - name: Build Windows Agent
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          set -euo pipefail
+          mkdir -p dist/package
+          go build -trimpath -ldflags="-s -w" -o dist/package/sessionguard-agent.exe ./cmd/agent
+
+      - name: Package
+        id: package
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          ASSET_BASE: ${{ steps.meta.outputs.asset_base }}
+        run: |
+          set -euo pipefail
+          cp scripts/install-agent.ps1 dist/package/
+          cp configs/agent.example.json dist/package/
+          cat > dist/package/VERSION.txt <<EOF
+          SessionGuard Windows Agent
+          Version: ${VERSION}
+          Architecture: windows/amd64
+          Commit: ${GITHUB_SHA}
+          EOF
+          (cd dist/package && sha256sum sessionguard-agent.exe > SHA256SUMS.txt)
+          (cd dist/package && zip -q -X "../${ASSET_BASE}.zip" ./*)
+          cp dist/package/sessionguard-agent.exe "dist/${ASSET_BASE}.exe"
+          (cd dist && sha256sum "${ASSET_BASE}.exe" "${ASSET_BASE}.zip" > "${ASSET_BASE}.sha256")
+          ls -lh dist/
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.asset_base }}
+          path: |
+            dist/${{ steps.meta.outputs.asset_base }}.exe
+            dist/${{ steps.meta.outputs.asset_base }}.zip
+            dist/${{ steps.meta.outputs.asset_base }}.sha256
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ASSET_BASE: ${{ steps.meta.outputs.asset_base }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            FLAGS=()
+            if [ "$PRERELEASE" = "true" ]; then FLAGS+=(--prerelease); fi
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "SessionGuard $TAG" "${FLAGS[@]}" \
+              --notes "Windows Agent ${VERSION} (windows/amd64), commit ${GITHUB_SHA}, triggered by ${GITHUB_ACTOR}. SHA256 checksums are attached as a separate asset."
+          fi
+          gh release upload "$TAG" --clobber "dist/${ASSET_BASE}.exe" "dist/${ASSET_BASE}.zip" "dist/${ASSET_BASE}.sha256"
+          echo "url=$(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          URL: ${{ steps.release.outputs.url }}
+          ASSET_BASE: ${{ steps.meta.outputs.asset_base }}
+        run: |
+          {
+            echo "### Windows Agent $TAG"
+            echo
+            echo "Release: $URL"
+            echo
+            echo "- \`${ASSET_BASE}.exe\`"
+            echo "- \`${ASSET_BASE}.zip\`"
+            echo "- \`${ASSET_BASE}.sha256\`"
+          } >> "$GITHUB_STEP_SUMMARY"

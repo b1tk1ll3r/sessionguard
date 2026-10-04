@@ -1,0 +1,27 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+  # Guacamole versions (API jar and images) must match the deployed
+  # Guacamole release and are bumped deliberately.
+  - package-ecosystem: maven
+    directory: /guacamole-extension
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: "org.apache.guacamole:*"
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /deploy/guacamole
+      - /guacamole-extension
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: "guacamole/guacamole"

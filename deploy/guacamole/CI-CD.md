@@ -1,55 +1,70 @@
-# Gitea CI/CD for the SessionGuard Guacamole extension
+# CI/CD
 
-The workflow `.gitea/workflows/release.yml` publishes three artifacts on every
-push to `main`:
+SessionGuard ships GitHub Actions workflows in `.github/workflows/`. The previous Gitea workflows in `.gitea/workflows/` (registry `git.send.nrw`) remain for existing Gitea mirrors; GitHub ignores that directory.
 
-1. `git.send.nrw/sendnrw/<repo>:<version>` - SessionGuard Master
-2. `git.send.nrw/sendnrw/<repo>-guacamole:<version>` - Guacamole with the
-   SessionGuard broker extension preinstalled
-3. `sessionguard-guacamole.jar` in the Gitea Generic Package Registry under
-   `<repo>-guacamole-extension/<version>`
+## Workflows
 
-Both container images also receive the `latest` tag.
+| Workflow | Trigger | Does |
+|---|---|---|
+| `ci.yml` | pull requests, pushes to branches other than `main`, called by the release workflows | gofmt, `go vet`, Windows cross-build, `go test` on Linux **and** Windows (junction tests), Maven build of the extension, JavaScript syntax check (`scripts/check-embedded-js.mjs`) |
+| `release.yml` | push to `main`, tags `v*`, manual | runs CI, then builds and pushes the three images to GHCR and builds the extension JAR (workflow artifact; on `v*` tags also attached to the GitHub Release) |
+| `windows-agent-release.yml` | manual (`version`, `prerelease`) | runs CI, builds `sessionguard-agent.exe`, creates or extends GitHub Release `v<version>` with exe, zip (incl. `install-agent.ps1`, example config) and SHA256 sums |
 
-## Required secrets
+Dependabot (`.github/dependabot.yml`) keeps actions, Go modules, Maven and base images current; Guacamole versions are intentionally excluded and bumped together with the deployed Guacamole release.
 
-The workflow reuses the existing secrets:
+## Images
 
-- `DOCKER_USERNAME`
-- `DOCKER_PASSWORD`
+| Image | Content |
+|---|---|
+| `ghcr.io/<owner>/sessionguard` | SessionGuard Master |
+| `ghcr.io/<owner>/sessionguard-edgeguard` | EdgeGuard |
+| `ghcr.io/<owner>/sessionguard-guacamole` | Guacamole 1.6.0 + SessionGuard extension |
 
-The account needs write access to both the OCI/container registry and the
-Gitea Package Registry. If these permissions should be separated, create
-`PACKAGE_USERNAME` and `PACKAGE_TOKEN` secrets and use those in the package
-upload step.
+Tags:
 
-## Compose
+- push to `main`: `latest`, `<git describe>` (e.g. `0.6.0-3-g0123456`), `sha-<short>`
+- tag `v0.6.0`: `0.6.0`, `0.6`, `sha-<short>` (no `latest`)
 
-Instead of the stock Guacamole image, use the CI-built image:
+Each image carries build provenance (SLSA, `mode=max`) and an SBOM in GHCR.
 
-```yaml
-services:
-  guacamole:
-    image: git.send.nrw/sendnrw/sessionguard-guacamole:${SESSIONGUARD_VERSION:-latest}
-    environment:
-      SESSIONGUARD_MASTER_URL: http://sessionguard-master:8080
-      SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY}
-      SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
+## Secrets and permissions
+
+No custom secrets are required: the workflows authenticate with the built-in `GITHUB_TOKEN` (`packages: write` for GHCR, `contents: write` only for the release steps).
+
+Under *Settings → Actions → General → Workflow permissions*, "Read repository contents and packages permissions" is sufficient, because every job requests its permissions explicitly.
+
+## Pulling the images
+
+GHCR packages of a new repository are **private** by default. Either make them public (*Package → Package settings → Change visibility*) or log in on the Docker hosts with a personal access token (classic) that has `read:packages`:
+
+```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
 ```
 
-Keep the existing Guacamole/PostgreSQL/header-auth environment variables. For SessionGuard 0.5.0 Access Auth, replace the old ForwardAuth middleware labels as described in `docs/ACCESS-AUTH.md`.
+Then point the stacks at GHCR, e.g.:
+
+```dotenv
+# production/sessionguard/.env
+SESSIONGUARD_IMAGE=ghcr.io/<owner>/sessionguard:latest
+# production/guac-worker/.env.guacXX
+SESSIONGUARD_GUAC_IMAGE=ghcr.io/<owner>/sessionguard-guacamole:latest
+# production/public-vps/.env
+EDGEGUARD_IMAGE=ghcr.io/<owner>/sessionguard-edgeguard
+```
+
+For production, prefer a fixed version tag (`:0.6.0`) over `latest`.
 
 ## Versioning
 
-`fetch-depth: 0` is important. The release version is determined with:
+`fetch-depth: 0` is required, because the version is determined with:
 
 ```sh
 git describe --tags --always | sed 's/^v//'
 ```
 
-A commit tagged `v0.5.0` therefore publishes `0.5.0`; later commits are named
-like `0.5.0-1-g0123456` until the next tag.
+Recommended release flow:
 
-The extension Dockerfile no longer hardcodes `sessionguard-guacamole-0.5.0.jar`.
-Maven may therefore change the project version without requiring a Dockerfile
-change.
+1. `git tag v0.6.0 && git push origin v0.6.0`: images `:0.6.0` and a GitHub Release with the extension JAR.
+2. Run *Actions → windows-agent-release* with `version = 0.6.0`: the agent assets are added to the same release.
+
+A tag created by `windows-agent-release` itself does **not** trigger `release.yml` (GitHub suppresses workflow runs caused by `GITHUB_TOKEN`), which is why the tag push comes first.

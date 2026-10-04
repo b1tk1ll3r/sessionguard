@@ -1,0 +1,183 @@
+# Builds and publishes the SessionGuard container images to GitHub Container
+# Registry (ghcr.io) and the Guacamole extension JAR.
+#
+#   push to main -> :latest, :<git describe>, :sha-<short>
+#   tag v1.2.3   -> :1.2.3, :1.2, :<git describe> + GitHub Release with JAR
+#
+# Replaces .gitea/workflows/release.yml and registry.yml (the latter only
+# built the Master image a second time).
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  GUACAMOLE_VERSION: "1.6.0"
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  images:
+    name: Image ${{ matrix.image }}
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: sessionguard
+            file: ./Dockerfile
+            target: ""
+          - image: sessionguard-edgeguard
+            file: ./Dockerfile.edgeguard
+            target: ""
+          - image: sessionguard-guacamole
+            file: ./deploy/guacamole/Dockerfile.guacamole
+            target: guacamole
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # git describe needs the tags.
+          fetch-depth: 0
+
+      - name: Meta
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GHCR image names must be lower case.
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          echo "version=$(git describe --tags --always | sed 's/^v//')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: tags
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ steps.meta.outputs.version }}
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            GUACAMOLE_VERSION=${{ env.GUACAMOLE_VERSION }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: ${{ steps.tags.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+          # Supply-chain metadata stored next to the image in GHCR.
+          provenance: mode=max
+          sbom: true
+
+  guacamole-extension:
+    name: Guacamole extension JAR
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      # Only needed to attach the JAR to the GitHub Release on tags.
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Exactly the JAR that is embedded into the Guacamole image.
+      - name: Build extension
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/guacamole/Dockerfile.guacamole
+          target: extension-artifact
+          push: false
+          outputs: type=local,dest=./dist/guacamole-extension
+          build-args: |
+            GUACAMOLE_VERSION=${{ env.GUACAMOLE_VERSION }}
+          cache-from: type=gha,scope=sessionguard-guacamole
+
+      - name: Checksum
+        id: jar
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR=dist/guacamole-extension/sessionguard-guacamole.jar
+          test -s "$JAR"
+          (cd dist/guacamole-extension && sha256sum sessionguard-guacamole.jar > sessionguard-guacamole.jar.sha256)
+          echo "sha256=$(cut -d' ' -f1 dist/guacamole-extension/sessionguard-guacamole.jar.sha256)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sessionguard-guacamole-extension
+          path: dist/guacamole-extension/
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "SessionGuard $TAG" \
+              --notes "Container images: ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/sessionguard{,-edgeguard,-guacamole}:${TAG#v}"
+          fi
+          gh release upload "$TAG" --clobber \
+            dist/guacamole-extension/sessionguard-guacamole.jar \
+            dist/guacamole-extension/sessionguard-guacamole.jar.sha256
+
+      - name: Summary
+        shell: bash
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          {
+            echo "### SessionGuard images"
+            echo
+            echo "- \`ghcr.io/${OWNER}/sessionguard\`"
+            echo "- \`ghcr.io/${OWNER}/sessionguard-edgeguard\`"
+            echo "- \`ghcr.io/${OWNER}/sessionguard-guacamole\`"
+            echo
+            echo "Guacamole extension SHA256: \`${{ steps.jar.outputs.sha256 }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

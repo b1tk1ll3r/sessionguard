@@ -10,6 +10,14 @@
 - Caddy: `Permissions-Policy` auf dem Guacamole-Host erlaubt `window-management=(self)` und `fullscreen=(self)`.
 - Siehe `docs/MULTI-MONITOR.md`. Guacamole 1.6 hat kein natives RDP-Multi-Monitor; die Upstream-PRs sind noch Drafts.
 
+### GitHub Actions
+
+- New workflows in `.github/workflows/`: `ci.yml` (gofmt, vet, tests on Linux + Windows, Maven, JS syntax), `release.yml` (images to GHCR with provenance/SBOM, extension JAR as artifact or release asset) and `windows-agent-release.yml` (GitHub Release via `gh`). Releases only run after green CI.
+- Fixes compared with the Gitea workflows: the Go version now comes from `go.mod` (previously 1.23 instead of 1.26), workflow inputs are passed through `env` instead of being interpolated into the shell, and the duplicate master build from `registry.yml` is gone. Minimal `permissions` per job; the built-in `GITHUB_TOKEN` is enough, no secrets needed.
+- Dependabot for actions, Go, Maven and base images (Guacamole versions excluded).
+- Dockerfiles also copy `go.sum` before `go mod download`.
+- `.gitea/workflows/` is kept for existing Gitea mirrors. See `deploy/guacamole/CI-CD.md`.
+
 ### Keycloak
 
 - OIDC is no longer PocketID-specific. New fields `oidc.scopes` / `access_auth.scopes`: Keycloak rejects the previously hard-coded `groups` scope with `invalid_scope`. New fields `groups_claims` take claim names or dot paths (`realm_access.roles`, `resource_access.<client>.roles`). `access_auth` inherits both from `oidc`.
