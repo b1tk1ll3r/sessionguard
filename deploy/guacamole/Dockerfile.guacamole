@@ -1,6 +1,6 @@
 ARG GUACAMOLE_VERSION=1.6.0
 
-FROM maven:3.9-eclipse-temurin-17 AS extension-build
+FROM maven:3-eclipse-temurin-24 AS extension-build
 WORKDIR /src
 COPY guacamole-extension/pom.xml ./pom.xml
 COPY guacamole-extension/src ./src
