@@ -11,7 +11,19 @@ type OIDCConfig struct {
 	RedirectURL       string   `json:"redirect_url"`
 	LogoutRedirectURL string   `json:"logout_redirect_url,omitempty"`
 	AdminGroups       []string `json:"admin_groups,omitempty"`
-	SecureCookie      bool     `json:"secure_cookie"`
+	// AllowAllAuthenticatedUsers explicitly permits every IdP user when
+	// admin_groups is empty. Without it an empty list denies all logins.
+	AllowAllAuthenticatedUsers bool `json:"allow_all_authenticated_users,omitempty"`
+	// SessionHours is the absolute admin session lifetime (default 8);
+	// IdleTimeoutMinutes ends sessions without requests (default 60).
+	SessionHours       int  `json:"session_hours,omitempty"`
+	IdleTimeoutMinutes int  `json:"idle_timeout_minutes,omitempty"`
+	SecureCookie       bool `json:"secure_cookie"`
+	// Scopes requested at the IdP (default: openid profile email groups).
+	// GroupsClaims lists claim names or dot paths holding groups/roles
+	// (default: groups), e.g. ["groups", "realm_access.roles"] for Keycloak.
+	Scopes       []string `json:"scopes,omitempty"`
+	GroupsClaims []string `json:"groups_claims,omitempty"`
 }
 
 // AccessAuthConfig configures the SessionGuard Master as a Traefik ForwardAuth
@@ -20,19 +32,40 @@ type OIDCConfig struct {
 // protected application may live on different DNS domains. Blank issuer/client
 // fields inherit their values from the primary OIDC configuration.
 type AccessAuthConfig struct {
-	Enabled           bool     `json:"enabled"`
-	Issuer            string   `json:"issuer,omitempty"`
-	ClientID          string   `json:"client_id,omitempty"`
-	ClientSecret      string   `json:"client_secret,omitempty"`
-	RedirectURL       string   `json:"redirect_url"`
-	LogoutRedirectURL string   `json:"logout_redirect_url,omitempty"`
-	CookieName        string   `json:"cookie_name,omitempty"`
-	CookieDomain      string   `json:"cookie_domain,omitempty"`
-	SecureCookie      bool     `json:"secure_cookie"`
-	SessionHours      int      `json:"session_hours,omitempty"`
-	UsernameClaim     string   `json:"username_claim,omitempty"`
-	AllowedGroups     []string `json:"allowed_groups,omitempty"`
-	AllowedHosts      []string `json:"allowed_hosts,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	Issuer            string `json:"issuer,omitempty"`
+	ClientID          string `json:"client_id,omitempty"`
+	ClientSecret      string `json:"client_secret,omitempty"`
+	RedirectURL       string `json:"redirect_url"`
+	LogoutRedirectURL string `json:"logout_redirect_url,omitempty"`
+	CookieName        string `json:"cookie_name,omitempty"`
+	CookieDomain      string `json:"cookie_domain,omitempty"`
+	SecureCookie      bool   `json:"secure_cookie"`
+	SessionHours      int    `json:"session_hours,omitempty"`
+	UsernameClaim     string `json:"username_claim,omitempty"`
+	// Scopes requested at the IdP (default: openid profile email groups).
+	// GroupsClaims lists claim names or dot paths holding groups/roles
+	// (default: groups), e.g. ["groups", "realm_access.roles"] for Keycloak.
+	Scopes        []string `json:"scopes,omitempty"`
+	GroupsClaims  []string `json:"groups_claims,omitempty"`
+	AllowedGroups []string `json:"allowed_groups,omitempty"`
+	AllowedHosts  []string `json:"allowed_hosts,omitempty"`
+	// ReservedUsernames can never be used as Guacamole identity (default:
+	// guacadmin, administrator, root). UsernamePattern restricts the
+	// accepted username characters (default ASCII letters, digits, ._@-).
+	ReservedUsernames []string `json:"reserved_usernames,omitempty"`
+	UsernamePattern   string   `json:"username_pattern,omitempty"`
+}
+
+// IdentityBinding pins a Guacamole username to the immutable OIDC subject
+// that used it first. It prevents account takeover by renaming an IdP
+// account to an existing username.
+type IdentityBinding struct {
+	Username  string    `json:"username"`
+	Subject   string    `json:"subject"`
+	Issuer    string    `json:"issuer,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	LastSeen  time.Time `json:"last_seen"`
 }
 
 // AuthSession is an opaque, server-side browser session. SessionGuard stores
@@ -384,7 +417,24 @@ type Resource struct {
 	RemoteAppCommandLine    uint32 `json:"remote_app_command_line_setting,omitempty"` // 0=deny, 1=allow, 2=require
 	RemoteAppRequiredArgs   string `json:"remote_app_required_command_line,omitempty"`
 	RemoteAppShowInPortal   bool   `json:"remote_app_show_in_portal,omitempty"`
-	Enabled                 bool   `json:"enabled"`
+	// Multi-monitor "span" mode: the Guacamole browser helper may stretch one
+	// window across several local screens; Guacamole's display-update channel
+	// then resizes the RDP desktop accordingly. This is a UX policy and is
+	// additionally bounded by guacd (8192 px) and the RDS host GPOs.
+	MultiMonitor       bool     `json:"multi_monitor,omitempty"`
+	MaxMonitors        int      `json:"max_monitors,omitempty"`         // 0 = default (2)
+	MultiMonitorGroups []string `json:"multi_monitor_groups,omitempty"` // empty = all users
+	Enabled            bool     `json:"enabled"`
+}
+
+// DisplayPolicy is returned to the Guacamole browser helper for the current
+// access session and connection.
+type DisplayPolicy struct {
+	MultiMonitor bool   `json:"multi_monitor"`
+	MaxMonitors  int    `json:"max_monitors"`
+	MaxWidth     int    `json:"max_width"`
+	MaxHeight    int    `json:"max_height"`
+	ResourceID   string `json:"resource_id,omitempty"`
 }
 
 type UserLease struct {

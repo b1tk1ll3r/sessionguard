@@ -21,7 +21,6 @@ func TestManagerLoginUsesPKCES256(t *testing.T) {
 			Endpoint:    oauth2.Endpoint{AuthURL: "https://login.example/authorize"},
 		},
 		pending: map[string]pending{},
-		logout:  map[string]logoutSession{},
 	}
 	r := httptest.NewRequest("GET", "https://director.example/oidc/login", nil)
 	w := httptest.NewRecorder()
@@ -56,8 +55,8 @@ func TestManagerLogoutUsesIDTokenHintAndRegisteredRedirect(t *testing.T) {
 		},
 		endSession: "https://login.example/api/oidc/end-session",
 		pending:    map[string]pending{},
-		logout: map[string]logoutSession{
-			session: logoutSession{IDToken: "header.payload.signature", Exp: time.Now().Add(time.Hour)},
+		sessions: map[string]adminSession{
+			hashAccessToken(session): {IDToken: "header.payload.signature", Exp: time.Now().Add(time.Hour)},
 		},
 	}
 	r := httptest.NewRequest("GET", "https://director.example/logout", nil)

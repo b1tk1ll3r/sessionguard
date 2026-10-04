@@ -25,7 +25,9 @@ type data struct {
 	PolicyHistory  []model.PolicyVersion        `json:"policy_history,omitempty"`
 	Alerts         map[string]model.Alert       `json:"alerts,omitempty"`
 	AuthSessions   map[string]model.AuthSession `json:"auth_sessions,omitempty"`
-	GlobalPolicy   *model.Policy                `json:"global_policy,omitempty"`
+	// IdentityBindings is keyed by the lower-cased Guacamole username.
+	IdentityBindings map[string]model.IdentityBinding `json:"identity_bindings,omitempty"`
+	GlobalPolicy     *model.Policy                    `json:"global_policy,omitempty"`
 }
 
 type persistence interface {
@@ -48,7 +50,7 @@ func emptyData() data {
 	return data{
 		Agents: map[string]model.AgentRecord{}, Farms: map[string]model.Farm{}, Resources: map[string]model.Resource{},
 		Leases: map[string]model.UserLease{}, Audit: []model.AuditEntry{}, SessionHistory: []model.SessionHistoryEvent{},
-		PolicyHistory: []model.PolicyVersion{}, Alerts: map[string]model.Alert{}, AuthSessions: map[string]model.AuthSession{},
+		PolicyHistory: []model.PolicyVersion{}, Alerts: map[string]model.Alert{}, AuthSessions: map[string]model.AuthSession{}, IdentityBindings: map[string]model.IdentityBinding{},
 	}
 }
 
@@ -100,6 +102,10 @@ func (s *store) normalize() {
 	if s.data.AuthSessions == nil {
 		s.data.AuthSessions = map[string]model.AuthSession{}
 	}
+	if s.data.IdentityBindings == nil {
+		s.data.IdentityBindings = map[string]model.IdentityBinding{}
+	}
+	seedIdentityBindings(&s.data)
 	for id, a := range s.data.Agents {
 		if a.Tags == nil {
 			a.Tags = map[string]string{}

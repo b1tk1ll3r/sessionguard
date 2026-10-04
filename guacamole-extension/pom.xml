@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>info.hilden.sessionguard</groupId>
   <artifactId>sessionguard-guacamole</artifactId>
-  <version>0.5.2</version>
+  <version>0.6.0</version>
   <packaging>jar</packaging>
   <properties>
     <maven.compiler.release>11</maven.compiler.release>
@@ -17,6 +17,13 @@
       <groupId>org.apache.guacamole</groupId>
       <artifactId>guacamole-ext</artifactId>
       <version>${guacamole.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <!-- Provided by the Guacamole web application at runtime. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>1.7.36</version>
       <scope>provided</scope>
     </dependency>
   </dependencies>

@@ -5,6 +5,21 @@
   "master_url": "https://sessionguard.example.org",
   "enrollment_token": "CHANGE-THIS-TO-A-LONG-RANDOM-SECRET",
   "heartbeat_seconds": 10,
+  "insecure_master_url": false,
+  "local_guard": {
+    "allowed_store_roots": [
+      "\\\\fileserver\\SessionGuardProfiles"
+    ],
+    "allowed_template_source_roots": [
+      "\\\\fileserver\\sessionguard-templates"
+    ],
+    "allowed_profile_roots": [
+      "C:\\Users"
+    ],
+    "protected_users": [
+      "Administrator"
+    ]
+  },
   "oidc": {
     "issuer": "https://id.example.org",
     "client_id": "POCKET-ID-AGENT-CLIENT-ID",

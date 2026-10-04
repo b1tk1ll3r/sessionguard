@@ -21,15 +21,19 @@ been established. It evaluates normal HTTP requests and the WebSocket handshake.
 
 - static IPv4/IPv6 IP/CIDR blacklist;
 - global request rate limit to protect backends during distributed HTTP floods;
-- high per-IP request rate limit (NAT-friendly defaults);
-- tighter, configurable limits for OIDC/login/callback paths;
+- high per-client request rate limit (NAT-friendly defaults; IPv4 per address,
+  IPv6 aggregated per /64 via `ipv6_prefix_length`);
+- tighter, configurable limits for OIDC/login/callback paths (`/_sessionguard/auth/login`,
+  `/_sessionguard/auth/oidc/callback`, `/login`, `/auth/login`, `/oidc/`);
 - scanner-path blocking (`/.env`, `/.git`, WordPress/phpMyAdmin probes, etc.);
 - blocks CONNECT/TRACE/TRACK;
 - temporary persistent bans for clearly hostile scanner/method behavior;
 - host allowlist and URI-length validation;
 - localhost-only health and Prometheus-style metrics endpoints;
 - automatic config/list reload (15 seconds by default);
-- bounded per-IP state (100,000 entries by default) to avoid memory exhaustion from rotating source addresses.
+- bounded per-client state (100,000 entries by default); when full, the
+  least-recently-seen entry is evicted instead of rejecting new clients, and
+  active bans are never evicted.
 
 The default `rate_limit_weight` for auto-ban is zero on purpose: legitimate
 users behind a shared NAT should receive 429 during extreme bursts, but should
@@ -46,6 +50,11 @@ The supplied Caddyfile additionally enables:
 - HTTP/1.1 + HTTP/2 only (HTTP/3 disabled to reduce exposed protocol surface);
 - HSTS and conservative security headers;
 - public blocking of SessionGuard `/metrics` and `/api/v1/broker/*`;
+- on the Guacamole host only `/_sessionguard/auth/*` is proxied to the Master
+  (prefix stripped); every other `/_sessionguard/*` path returns 404, so the
+  admin UI and APIs are reachable only via the SessionGuard host;
+- `Permissions-Policy` on the Guacamole host allows `fullscreen` and
+  `window-management` (multi-monitor helper, `getScreenDetails()`);
 - rotated JSON access logs with sampling during request floods;
 - Caddy admin API disabled (`admin off`); configuration changes use a container restart.
 

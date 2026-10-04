@@ -6,6 +6,10 @@
     "info.hilden.sessionguard.guacamole.SessionGuardAuthenticationProvider"
   ],
   "js": [
-    "js/sessionguard-access.js"
+    "js/sessionguard-access.js",
+    "js/sessionguard-multimonitor.js"
+  ],
+  "css": [
+    "css/sessionguard-multimonitor.css"
   ]
 }

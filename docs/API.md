@@ -1,4 +1,4 @@
-# HTTP API (v0.4)
+# HTTP API (v0.6)
 
 All JSON APIs return an error object with an `error` field on failure unless otherwise stated.
 
@@ -15,7 +15,11 @@ All JSON APIs return an error object with an `error` field on failure unless oth
 
 ### OIDC-protected admin endpoints
 
-All remaining `/api/v1/...` endpoints require an authenticated Master OIDC session; write operations additionally require the documented RBAC permission.
+All remaining `/api/v1/...` endpoints require an authenticated Master OIDC session. Since v0.6 read endpoints require the `view` permission, write operations additionally require the documented RBAC permission. Cookie-authenticated unsafe requests (POST/PUT/PATCH/DELETE) must be same-origin (`Origin` / `Sec-Fetch-Site`) and `/api/` bodies must be sent as `Content-Type: application/json`.
+
+### Access-session endpoints (Guacamole host, below `/_sessionguard`)
+
+- `GET /auth/display-policy?connection_id=&connection_name=` – valid access-session cookie required. Returns `{"multi_monitor":bool,"max_monitors":n,"max_width":8192,"max_height":8192,"resource_id":"..."}` for the current user. Unmapped connections return `multi_monitor:false` without revealing whether a mapping exists. See `docs/MULTI-MONITOR.md`.
 
 ## Broker
 
@@ -129,9 +133,14 @@ Resource fields include desktop/RemoteApp kind, farm ID, Guacamole connection ID
   "remote_app_command_line_setting": 0,
   "remote_app_required_command_line": "",
   "remote_app_show_in_portal": false,
+  "multi_monitor": false,
+  "max_monitors": 0,
+  "multi_monitor_groups": [],
   "enabled": true
 }
 ```
+
+`multi_monitor` enables the Guacamole span helper for this resource; `max_monitors` is 2–4 (default 2) and `multi_monitor_groups` optionally restricts it to IdP groups (case-insensitive, empty = all access-session users).
 
 `remote_app_command_line_setting` is `0` (deny client-provided arguments), `1` (allow), or `2` (require the configured command line). For Agent-managed RemoteApps the broker mirrors this policy into Guacamole tokens: setting `0` emits no RemoteApp arguments, setting `1` uses `remote_app_args`, and setting `2` forces `remote_app_required_command_line`.
 

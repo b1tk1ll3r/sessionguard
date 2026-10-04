@@ -71,18 +71,29 @@ services:
       start_period: 10s
 
   # Generates the official Guacamole PostgreSQL schema once into a named volume.
+  # 002-sessionguard-hardening.sql replaces the initdb default "guacadmin"
+  # (password "guacadmin") by GUAC_ADMIN_USER. Like all initdb scripts it only
+  # runs on the very first database start; for existing databases run
+  # production/guacamole/harden-guacamole-db.sql manually.
   guac-init:
     image: guacamole/guacamole:${GUACAMOLE_VERSION:-1.6.0}
     container_name: guac-init
     restart: "no"
+    environment:
+      GUAC_ADMIN_USER: ${GUAC_ADMIN_USER:?GUAC_ADMIN_USER (PocketID username of the first Guacamole admin) is required}
     command:
       - /bin/sh
       - -ec
       - |
         /opt/guacamole/bin/initdb.sh --postgresql > /initdb/001-guacamole.sql
         test -s /initdb/001-guacamole.sql
+        case "$$GUAC_ADMIN_USER" in
+          ""|guacadmin|*[!A-Za-z0-9._@-]*) echo "invalid GUAC_ADMIN_USER" >&2; exit 1 ;;
+        esac
+        sed "s/:'admin_user'/'$$GUAC_ADMIN_USER'/g" /sessionguard/harden-guacamole-db.sql > /initdb/002-sessionguard-hardening.sql
     volumes:
       - guac-init:/initdb
+      - ../guacamole/harden-guacamole-db.sql:/sessionguard/harden-guacamole-db.sql:ro
 
   # One shared Guacamole DB for ALL guac01/02/03 workers.
   guacamole-postgres:

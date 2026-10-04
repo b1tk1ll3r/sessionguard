@@ -23,7 +23,7 @@ import (
 	"github.com/example/sessionguard/internal/model"
 )
 
-const Version = "0.5.2"
+const Version = "0.6.0"
 
 type App struct {
 	cfg    config.Master
@@ -56,6 +56,7 @@ func (a *App) Run(ctx context.Context) error {
 	a.auth.Register(mux)
 	if a.access != nil {
 		a.access.Register(mux)
+		mux.HandleFunc("GET /auth/display-policy", a.displayPolicy)
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, 200, map[string]any{"ok": true, "version": Version, "store": a.store.kind()})
@@ -72,8 +73,8 @@ func (a *App) Run(ctx context.Context) error {
 	})
 	mux.Handle("GET /{$}", a.auth.Require(http.HandlerFunc(a.masterPage)))
 	mux.Handle("GET /api/v1/me", a.auth.Require(http.HandlerFunc(a.me)))
-	mux.Handle("GET /api/v1/dashboard", a.auth.Require(http.HandlerFunc(a.dashboard)))
-	mux.Handle("GET /api/v1/agents/{id}", a.auth.Require(http.HandlerFunc(a.agentDetail)))
+	mux.Handle("GET /api/v1/dashboard", a.auth.Require(a.require("view", http.HandlerFunc(a.dashboard))))
+	mux.Handle("GET /api/v1/agents/{id}", a.auth.Require(a.require("view", http.HandlerFunc(a.agentDetail))))
 	mux.Handle("PUT /api/v1/agents/{id}/policy", a.auth.Require(a.require("policy", http.HandlerFunc(a.policy))))
 	mux.Handle("POST /api/v1/agents/{id}/policy/rollback/{revision}", a.auth.Require(a.require("policy", http.HandlerFunc(a.policyRollback))))
 	mux.Handle("PUT /api/v1/policy/all", a.auth.Require(a.require("policy", http.HandlerFunc(a.policyAll))))
@@ -85,21 +86,26 @@ func (a *App) Run(ctx context.Context) error {
 	mux.Handle("POST /api/v1/agents/{id}/sessions/bulk", a.auth.Require(a.require("session", http.HandlerFunc(a.sessionBulkAction))))
 	mux.Handle("POST /api/v1/agents/{id}/processes/{pid}/kill", a.auth.Require(a.require("process", http.HandlerFunc(a.processKill))))
 	mux.Handle("GET /api/v1/audit", a.auth.Require(a.require("audit", http.HandlerFunc(a.audit))))
-	mux.Handle("GET /api/v1/history", a.auth.Require(http.HandlerFunc(a.history)))
+	mux.Handle("GET /api/v1/history", a.auth.Require(a.require("view", http.HandlerFunc(a.history))))
 	mux.Handle("GET /api/v1/policy/history", a.auth.Require(a.require("policy", http.HandlerFunc(a.policyHistory))))
-	mux.Handle("GET /api/v1/farms", a.auth.Require(http.HandlerFunc(a.farms)))
+	mux.Handle("GET /api/v1/farms", a.auth.Require(a.require("view", http.HandlerFunc(a.farms))))
 	mux.Handle("POST /api/v1/farms", a.auth.Require(a.require("manage", http.HandlerFunc(a.farmCreate))))
 	mux.Handle("PUT /api/v1/farms/{id}", a.auth.Require(a.require("manage", http.HandlerFunc(a.farmUpdate))))
 	mux.Handle("DELETE /api/v1/farms/{id}", a.auth.Require(a.require("manage", http.HandlerFunc(a.farmDelete))))
-	mux.Handle("GET /api/v1/resources", a.auth.Require(http.HandlerFunc(a.resources)))
+	mux.Handle("GET /api/v1/resources", a.auth.Require(a.require("view", http.HandlerFunc(a.resources))))
 	mux.Handle("POST /api/v1/resources", a.auth.Require(a.require("manage", http.HandlerFunc(a.resourceCreate))))
 	mux.Handle("PUT /api/v1/resources/{id}", a.auth.Require(a.require("manage", http.HandlerFunc(a.resourceUpdate))))
 	mux.Handle("DELETE /api/v1/resources/{id}", a.auth.Require(a.require("manage", http.HandlerFunc(a.resourceDelete))))
-	mux.Handle("GET /api/v1/alerts", a.auth.Require(http.HandlerFunc(a.alerts)))
-	mux.Handle("GET /api/v1/leases", a.auth.Require(http.HandlerFunc(a.leases)))
+	mux.Handle("GET /api/v1/alerts", a.auth.Require(a.require("view", http.HandlerFunc(a.alerts))))
+	mux.Handle("GET /api/v1/leases", a.auth.Require(a.require("view", http.HandlerFunc(a.leases))))
 	mux.Handle("GET /api/v1/access/sessions", a.auth.Require(a.require("manage", http.HandlerFunc(a.accessSessions))))
 	mux.Handle("DELETE /api/v1/access/sessions/{id}", a.auth.Require(a.require("manage", http.HandlerFunc(a.accessSessionRevoke))))
-	server := &http.Server{Addr: a.cfg.Listen, Handler: securityHeaders(mux), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second}
+	mux.Handle("GET /api/v1/access/identities", a.auth.Require(a.require("manage", http.HandlerFunc(a.identityBindings))))
+	mux.Handle("DELETE /api/v1/access/identities", a.auth.Require(a.require("manage", http.HandlerFunc(a.identityBindingsReset))))
+	mux.Handle("DELETE /api/v1/access/identities/{username}", a.auth.Require(a.require("manage", http.HandlerFunc(a.identityBindingRelease))))
+	mux.Handle("GET /api/v1/admin/sessions", a.auth.Require(a.require("manage", http.HandlerFunc(a.adminSessions))))
+	mux.Handle("DELETE /api/v1/admin/sessions/{id}", a.auth.Require(a.require("manage", http.HandlerFunc(a.adminSessionRevoke))))
+	server := &http.Server{Addr: a.cfg.Listen, Handler: securityHeaders(csrfGuard(mux)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second}
 	go a.monitor(ctx)
 	go func() {
 		<-ctx.Done()
@@ -119,7 +125,7 @@ func (a *App) Run(ctx context.Context) error {
 func (a *App) enroll(w http.ResponseWriter, r *http.Request) {
 	var req model.EnrollRequest
 	if err := httpx.DecodeJSON(r, &req, 64<<10); err != nil {
-		httpx.Error(w, 400, err.Error())
+		httpx.Fail(w, r, 400, "invalid request body", err)
 		return
 	}
 	if !constantEqual(req.EnrollmentToken, a.cfg.EnrollmentToken) || strings.TrimSpace(req.MachineID) == "" {
@@ -151,14 +157,22 @@ func (a *App) enroll(w http.ResponseWriter, r *http.Request) {
 	if rec.MaintenanceMode == "" {
 		rec.MaintenanceMode = "online"
 	}
-	a.store.data.Agents[id] = rec
 	action := "agent_reenroll"
 	if newEnrollment {
 		action = "agent_enroll"
+	} else {
+		// MachineGuid is readable by local users and the enrollment token is
+		// shared, so a re-enrollment may be an impersonation attempt. Keep
+		// the record but quarantine it from brokering until an admin sets the
+		// server back online.
+		rec.MaintenanceMode = "maintenance"
+		action = "agent_reenroll_quarantined"
+		log.Printf("agent %s (%s) re-enrolled; set to maintenance until approved by an admin", id, req.Name)
 	}
+	a.store.data.Agents[id] = rec
 	a.store.appendAuditLocked(model.AuditEntry{Time: now, Actor: "agent-bootstrap", Action: action, Target: req.Name, Result: "success", Details: req.MachineID})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	httpx.JSON(w, 200, model.EnrollResponse{AgentID: id, Token: token})
@@ -173,7 +187,7 @@ func (a *App) heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	var snap model.AgentSnapshot
 	if err := httpx.DecodeJSON(r, &snap, 8<<20); err != nil {
-		httpx.Error(w, 400, err.Error())
+		httpx.Fail(w, r, 400, "invalid request body", err)
 		return
 	}
 	if snap.ProtocolVersion != model.ProtocolVersion {
@@ -193,6 +207,13 @@ func (a *App) heartbeat(w http.ResponseWriter, r *http.Request) {
 	snap.AgentID = id
 	rec.LastSeen = now
 	rec.Snapshot = snap
+	// The reported hostname becomes ${SESSIONGUARD_HOST}. A changed hostname
+	// would silently redirect RDP connections, so quarantine the host first.
+	if previous.Server.Hostname != "" && snap.Server.Hostname != "" && !strings.EqualFold(previous.Server.Hostname, snap.Server.Hostname) && rec.MaintenanceMode != "maintenance" {
+		rec.MaintenanceMode = "maintenance"
+		a.store.appendAuditLocked(model.AuditEntry{Time: now, Actor: "agent:" + rec.Name, Action: "agent_hostname_changed_quarantined", Target: rec.Name, Result: "warning", Details: previous.Server.Hostname + " -> " + snap.Server.Hostname})
+		log.Printf("agent %s hostname changed %q -> %q; set to maintenance until approved by an admin", id, previous.Server.Hostname, snap.Server.Hostname)
+	}
 	if snap.Server.Hostname != "" {
 		rec.Name = snap.Server.Hostname
 	}
@@ -239,7 +260,7 @@ func (a *App) heartbeat(w http.ResponseWriter, r *http.Request) {
 	commands := append([]model.SessionCommand(nil), rec.PendingCommands...)
 	if err := a.store.saveLocked(); err != nil {
 		a.store.mu.Unlock()
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	a.store.mu.Unlock()
@@ -334,7 +355,7 @@ func (a *App) brokerResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	var req model.BrokerRequest
 	if err := httpx.DecodeJSON(r, &req, 64<<10); err != nil {
-		httpx.Error(w, 400, err.Error())
+		httpx.Fail(w, r, 400, "invalid request body", err)
 		return
 	}
 	if strings.TrimSpace(req.Username) == "" {
@@ -343,7 +364,7 @@ func (a *App) brokerResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := a.resolveBroker(req)
 	if err != nil {
-		httpx.Error(w, 503, err.Error())
+		httpx.Fail(w, r, 503, "no session host is currently available", err)
 		return
 	}
 	httpx.JSON(w, 200, resp)
@@ -385,7 +406,7 @@ func (a *App) brokerTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := a.resolveBroker(req)
 	if err != nil {
-		httpx.Error(w, 503, err.Error())
+		httpx.Fail(w, r, 503, "no session host is currently available", err)
 		return
 	}
 	values := url.Values{}
@@ -655,7 +676,7 @@ func (a *App) policy(w http.ResponseWriter, r *http.Request) {
 	a.recordPolicyVersionLocked("agent:"+id, p, actor)
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: actor, Action: "policy_update", Target: rec.Name, Result: "queued", Details: p.Revision})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	httpx.JSON(w, 200, p)
@@ -684,7 +705,7 @@ func (a *App) policyAll(w http.ResponseWriter, r *http.Request) {
 	a.recordPolicyVersionLocked("global", p, actor)
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: actor, Action: "global_policy_update", Target: "all agents", Result: "queued", Details: p.Revision})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	httpx.JSON(w, 200, p)
@@ -719,7 +740,7 @@ func (a *App) farmPolicy(w http.ResponseWriter, r *http.Request) {
 	a.recordPolicyVersionLocked("farm:"+id, p, actor)
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: actor, Action: "farm_policy_update", Target: f.Name, Result: "queued", Details: p.Revision})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	httpx.JSON(w, 200, p)
@@ -770,7 +791,7 @@ func (a *App) rollbackPolicyTarget(w http.ResponseWriter, r *http.Request, targe
 	a.recordPolicyVersionLocked(target, *found, actor)
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: actor, Action: "policy_rollback", Target: name, Result: "queued", Details: rev + " -> " + found.Revision})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	httpx.JSON(w, 200, found)
@@ -812,7 +833,7 @@ func (a *App) policyRollback(w http.ResponseWriter, r *http.Request) {
 	a.recordPolicyVersionLocked("agent:"+id, *found, actor)
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: actor, Action: "policy_rollback", Target: rec.Name, Result: "queued", Details: rev + " -> " + found.Revision})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	httpx.JSON(w, 200, found)
@@ -864,7 +885,7 @@ func (a *App) agentControl(w http.ResponseWriter, r *http.Request) {
 	a.store.data.Agents[id] = rec
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: requestActor(r), Action: "agent_control", Target: rec.Name, Result: "success", Details: fmt.Sprintf("mode=%s restart_when_drained=%v", rec.MaintenanceMode, rec.RestartWhenDrained)})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	rec.TokenHash = ""
@@ -901,7 +922,7 @@ func (a *App) sessionAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cmd := model.SessionCommand{ID: randomToken(12), Action: action, SessionID: uint32(session64), Title: req.Title, Message: req.Message, RequestedBy: requestActor(r), CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(2 * time.Minute)}
-	a.queueCommand(w, id, cmd)
+	a.queueCommand(w, r, id, cmd)
 }
 func (a *App) sessionBulkAction(w http.ResponseWriter, r *http.Request) {
 	if !httpx.SameOrigin(r) {
@@ -977,7 +998,7 @@ func (a *App) sessionBulkAction(w http.ResponseWriter, r *http.Request) {
 	a.store.data.Agents[id] = rec
 	a.store.appendAuditLocked(model.AuditEntry{Time: now, Actor: requestActor(r), Action: "bulk:" + action, Target: rec.Name, Result: "queued", Details: fmt.Sprintf("scope=%s sessions=%d", scope, added)})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	httpx.JSON(w, 202, map[string]any{"queued": added})
@@ -1012,9 +1033,9 @@ func (a *App) processKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cmd := model.SessionCommand{ID: randomToken(12), Action: "kill_process", SessionID: sessionID, PID: pid, RequestedBy: requestActor(r), CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(2 * time.Minute)}
-	a.queueCommand(w, agentID, cmd)
+	a.queueCommand(w, r, agentID, cmd)
 }
-func (a *App) queueCommand(w http.ResponseWriter, id string, cmd model.SessionCommand) {
+func (a *App) queueCommand(w http.ResponseWriter, r *http.Request, id string, cmd model.SessionCommand) {
 	a.store.mu.Lock()
 	defer a.store.mu.Unlock()
 	rec, ok := a.store.data.Agents[id]
@@ -1038,7 +1059,7 @@ func (a *App) queueCommand(w http.ResponseWriter, id string, cmd model.SessionCo
 	a.store.data.Agents[id] = rec
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: cmd.RequestedBy, Action: "command:" + cmd.Action, Target: commandTarget(rec, cmd), Result: "queued"})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	httpx.JSON(w, 202, cmd)
@@ -1103,7 +1124,7 @@ func (a *App) saveFarm(w http.ResponseWriter, r *http.Request, f model.Farm, mus
 	a.store.data.Farms[f.ID] = f
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: requestActor(r), Action: "farm_save", Target: f.Name, Result: "success"})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	httpx.JSON(w, 200, f)
@@ -1120,7 +1141,7 @@ func (a *App) farmDelete(w http.ResponseWriter, r *http.Request) {
 	delete(a.store.data.Farms, id)
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: requestActor(r), Action: "farm_delete", Target: f.Name, Result: "success"})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	w.WriteHeader(204)
@@ -1180,6 +1201,10 @@ func (a *App) saveResource(w http.ResponseWriter, r *http.Request, x model.Resou
 		x.RemoteAppRequiredArgs = ""
 		x.RemoteAppShowInPortal = false
 	}
+	if err := normalizeMultiMonitor(&x); err != nil {
+		httpx.Error(w, 400, err.Error())
+		return
+	}
 	if x.Kind == "remoteapp" {
 		alias := remoteAppAlias(x.RemoteApp)
 		if !validRemoteAppAlias(alias) {
@@ -1229,7 +1254,7 @@ func (a *App) saveResource(w http.ResponseWriter, r *http.Request, x model.Resou
 	a.store.data.Resources[x.ID] = x
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: requestActor(r), Action: "resource_save", Target: x.Name, Result: "success"})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	httpx.JSON(w, 200, x)
@@ -1246,7 +1271,7 @@ func (a *App) resourceDelete(w http.ResponseWriter, r *http.Request) {
 	delete(a.store.data.Resources, id)
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: requestActor(r), Action: "resource_delete", Target: x.Name, Result: "success"})
 	if err := a.store.saveLocked(); err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	w.WriteHeader(204)
@@ -1346,7 +1371,7 @@ func (a *App) accessSessionRevoke(w http.ResponseWriter, r *http.Request) {
 	err := a.store.saveLocked()
 	a.store.mu.Unlock()
 	if err != nil {
-		httpx.Error(w, 500, err.Error())
+		httpx.InternalError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -1541,7 +1566,7 @@ func (a *App) roles(r *http.Request) []string {
 	set := map[string]bool{}
 	for _, g := range u.Groups {
 		for configured, roles := range a.cfg.RBAC.Groups {
-			if strings.EqualFold(g, configured) {
+			if auth.GroupMatches(g, configured) {
 				for _, role := range roles {
 					set[strings.ToLower(role)] = true
 				}

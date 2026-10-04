@@ -1,0 +1,54 @@
+/* SessionGuard multi-monitor helper: compact top-center pull-down bar. */
+.sg-mm-bar {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translate(-50%, calc(-100% + 6px));
+    z-index: 2147483000;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px 8px;
+    border-radius: 0 0 10px 10px;
+    background: rgba(20, 28, 44, 0.92);
+    color: #f1f5fb;
+    font: 600 12px/1.2 system-ui, "Segoe UI", sans-serif;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    opacity: 0.55;
+    transition: transform 0.15s ease, opacity 0.15s ease;
+}
+.sg-mm-bar:hover,
+.sg-mm-bar:focus-within {
+    transform: translate(-50%, 0);
+    opacity: 1;
+}
+.sg-mm-handle {
+    font-size: 14px;
+    opacity: 0.8;
+}
+.sg-mm-bar button {
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 7px;
+    background: #4f6ff2;
+    color: #fff;
+    padding: 5px 10px;
+    font: inherit;
+    cursor: pointer;
+}
+.sg-mm-bar button:hover {
+    filter: brightness(1.1);
+}
+.sg-mm-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    z-index: 2147483001;
+    max-width: min(560px, calc(100vw - 32px));
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: rgba(20, 28, 44, 0.95);
+    color: #f1f5fb;
+    font: 500 13px/1.4 system-ui, "Segoe UI", sans-serif;
+    box-shadow: 0 8px 26px rgba(0, 0, 0, 0.4);
+}

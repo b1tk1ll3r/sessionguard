@@ -25,7 +25,7 @@ import (
 	"github.com/example/sessionguard/internal/windowsx"
 )
 
-const Version = "0.5.2"
+const Version = "0.6.0"
 
 type App struct {
 	cfg          config.Agent
@@ -38,6 +38,8 @@ type App struct {
 	client       *masterClient
 	sessionWake  chan struct{}
 	bootstrapped bool
+	// rejectedRevision suppresses repeated policy_rejected events for the same revision.
+	rejectedRevision string
 }
 
 func New(cfg config.Agent) (*App, error) {
@@ -57,7 +59,15 @@ func New(cfg config.Agent) (*App, error) {
 		return nil, err
 	}
 	config.NormalizePolicy(&st.Policy)
-	return &App{cfg: cfg, store: stateStore{path: statePath(cfg.DataDir)}, state: st, client: newMasterClient(cfg.MasterURL), sessionWake: make(chan struct{}, 1)}, nil
+	app := &App{cfg: cfg, store: stateStore{path: statePath(cfg.DataDir)}, state: st, client: newMasterClient(cfg.MasterURL), sessionWake: make(chan struct{}, 1)}
+	// A persisted policy may predate the current local_guard; never keep acting on it.
+	if err := checkPolicyGuard(cfg, st.Policy); err != nil {
+		log.Printf("persisted policy %s violates local_guard, falling back to agent.json policy: %v", st.Policy.Revision, err)
+		app.state.Policy = cfg.Policy
+		app.appendEventLocked("error", "policy_rejected", "", fmt.Sprintf("Gespeicherte Policy verletzt local_guard und wurde verworfen: %v", err))
+		_ = app.store.save(app.state)
+	}
+	return app, nil
 }
 
 func newRevision() string {
@@ -301,7 +311,7 @@ func (a *App) handleEndedSessionLocked(prev model.Session, now time.Time) {
 
 func (a *App) scheduleCleanupLocked(sid, user string, now time.Time) {
 	p := a.state.Policy.Cleanup
-	if !p.Enabled || sid == "" || excludedIdentity(user, sid, p.ExcludeUsers, p.ExcludeSIDs) {
+	if !p.Enabled || sid == "" || excludedIdentity(user, sid, p.ExcludeUsers, p.ExcludeSIDs) || protectedUser(a.cfg, user, sid) {
 		return
 	}
 	if _, exists := a.state.Pending[sid]; exists {
@@ -497,7 +507,7 @@ func (a *App) applyTemplates(s model.Session) {
 	}
 	policy := a.policy()
 	for _, item := range policy.Templates {
-		changed, err := tpl.Apply(path, item)
+		changed, err := tpl.Apply(path, item, func(src string) error { return checkTemplateSourceResolved(a.cfg, src) })
 		a.mu.Lock()
 		if err != nil {
 			a.appendEventLocked("error", "template_error", displayUser(s), fmt.Sprintf("Template %s konnte nicht angewendet werden: %v", item.ID, err))
@@ -558,7 +568,7 @@ func (a *App) processCleanup(now time.Time) {
 			a.mu.Unlock()
 			continue
 		}
-		if !safeProfilePath(job.ProfilePath, p.AllowedProfileRoots) {
+		if !safeProfilePath(job.ProfilePath, p.AllowedProfileRoots) || (len(a.cfg.LocalGuard.AllowedProfileRoots) > 0 && !safeProfilePath(job.ProfilePath, a.cfg.LocalGuard.AllowedProfileRoots)) {
 			a.mu.Lock()
 			job.LastError = "profile path is outside allowed roots"
 			job.DueAt = time.Now().UTC().Add(time.Duration(p.RetrySeconds) * time.Second)
@@ -641,9 +651,18 @@ func (a *App) executeSessionCommand(cmd model.SessionCommand) model.CommandResul
 	res := model.CommandResult{ID: cmd.ID, Action: cmd.Action, SessionID: cmd.SessionID, PID: cmd.PID, CompletedAt: time.Now().UTC()}
 	policy := a.policy()
 	action := strings.ToLower(strings.TrimSpace(cmd.Action))
-	if action != "restart_server" && !policy.Sessions.ControlEnabled {
+	if !policy.Sessions.ControlEnabled {
 		res.Error = "session control is disabled by policy"
 		return res
+	}
+	if action != "restart_server" && cmd.SessionID != 0 {
+		a.mu.RLock()
+		s, ok := a.state.LastSessions[cmd.SessionID]
+		a.mu.RUnlock()
+		if ok && a.protected(s) {
+			res.Error = "session belongs to a local_guard protected user"
+			return res
+		}
 	}
 	if !cmd.ExpiresAt.IsZero() && time.Now().After(cmd.ExpiresAt) {
 		res.Error = "command expired"
@@ -733,13 +752,13 @@ func (a *App) processCommands(commands []model.SessionCommand) {
 }
 
 func (a *App) cleanupExcluded(s model.Session) bool {
-	return excludedBy(s, a.state.Policy.Cleanup.ExcludeUsers, a.state.Policy.Cleanup.ExcludeSIDs)
+	return excludedBy(s, a.state.Policy.Cleanup.ExcludeUsers, a.state.Policy.Cleanup.ExcludeSIDs) || a.protected(s)
 }
 func (a *App) profileExcluded(s model.Session) bool {
-	return excludedBy(s, a.state.Policy.Profiles.ExcludeUsers, a.state.Policy.Profiles.ExcludeSIDs)
+	return excludedBy(s, a.state.Policy.Profiles.ExcludeUsers, a.state.Policy.Profiles.ExcludeSIDs) || a.protected(s)
 }
 func (a *App) sessionExcluded(s model.Session) bool {
-	return excludedBy(s, a.state.Policy.Sessions.ExcludeUsers, a.state.Policy.Sessions.ExcludeSIDs)
+	return excludedBy(s, a.state.Policy.Sessions.ExcludeUsers, a.state.Policy.Sessions.ExcludeSIDs) || a.protected(s)
 }
 
 func excludedBy(s model.Session, users, sids []string) bool {
@@ -940,10 +959,16 @@ func (a *App) sendHeartbeat(ctx context.Context) {
 	a.lastMasterOK = time.Now().UTC()
 	a.masterErr = ""
 	changed := false
-	if resp.DesiredPolicy != nil && resp.DesiredPolicy.Revision != "" && resp.DesiredPolicy.Revision != a.state.Policy.Revision {
+	if resp.DesiredPolicy != nil && resp.DesiredPolicy.Revision != "" && resp.DesiredPolicy.Revision != a.state.Policy.Revision && resp.DesiredPolicy.Revision != a.rejectedRevision {
 		p := *resp.DesiredPolicy
 		config.NormalizePolicy(&p)
-		if err := config.ValidatePolicy(p); err != nil {
+		err := config.ValidatePolicy(p)
+		if err == nil {
+			err = checkPolicyGuard(a.cfg, p)
+		}
+		if err != nil {
+			a.rejectedRevision = p.Revision
+			log.Printf("master policy %s rejected: %v", p.Revision, err)
 			a.appendEventLocked("error", "policy_rejected", "", fmt.Sprintf("Master-Policy verworfen: %v", err))
 		} else {
 			a.state.Policy = p
@@ -1170,6 +1195,10 @@ func (a *App) policyAPI(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, 400, err.Error())
 		return
 	}
+	if err := checkPolicyGuard(a.cfg, p); err != nil {
+		httpx.Error(w, 400, err.Error())
+		return
+	}
 	p.Revision = newRevision()
 	p.UpdatedAt = time.Now().UTC()
 	a.mu.Lock()
@@ -1201,6 +1230,10 @@ func (a *App) sessionActionAPI(w http.ResponseWriter, r *http.Request) {
 	var req model.SessionActionRequest
 	if err := httpx.DecodeJSON(r, &req, 64<<10); err != nil {
 		httpx.Error(w, 400, err.Error())
+		return
+	}
+	if !localUIActions[strings.ToLower(strings.TrimSpace(req.Action))] {
+		httpx.Error(w, 403, "action is not available in the local WebUI")
 		return
 	}
 	u, _ := auth.UserFrom(r)

@@ -29,6 +29,18 @@ SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY}
 SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
 ```
 
+Optional (v0.6):
+
+```yaml
+# Veto every Guacamole login not authenticated via the header provider
+# with a matching identity header (default true; false = break-glass only).
+SESSIONGUARD_ENFORCE_HEADER_AUTH: "true"
+# Defaults to HTTP_AUTH_HEADER, then X-Guacamole-User.
+SESSIONGUARD_IDENTITY_HEADER: X-Guacamole-User
+# Comma-separated auth provider identifiers allowed to authenticate users.
+SESSIONGUARD_ALLOWED_AUTH_PROVIDERS: header
+```
+
 Use the same broker API key configured on the SessionGuard Master. The URL should preferably be an internal network URL, not the public Internet endpoint.
 
 ## Desktop connection
@@ -55,6 +67,10 @@ remote-app-args: ${SESSIONGUARD_REMOTE_APP_ARGS}
 If your Agents report short Windows computer names and your DNS requires a suffix, a Guacamole hostname such as `${SESSIONGUARD_HOST}.example.org` is valid.
 
 Create a matching Published Resource in SessionGuard by Guacamole connection ID or name. In v0.4 the Resource can optionally enable **Agent-managed RemoteApp publication** and specify the executable path. The Master then distributes the desired alias/path to every Agent in the farm. A managed RemoteApp is not brokered to a host until the Agent reports that it is present and in sync. The broker also aligns `${SESSIONGUARD_REMOTE_APP_ARGS}` with the Windows command-line policy (deny/allow/require).
+
+## Multi-monitor (span)
+
+The extension also ships `js/sessionguard-multimonitor.js`. For Resources with `multi_monitor` enabled it offers a small top-center bar in the Guacamole client view which opens the session in one window spanning several local screens; set the connection's `resize-method` to `display-update` so the RDP desktop follows the window size. Guacamole 1.6 has no native RDP multi-monitor support. See `docs/MULTI-MONITOR.md`.
 
 ## Header-auth security boundary
 

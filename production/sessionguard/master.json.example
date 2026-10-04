@@ -13,7 +13,9 @@
     "client_secret": "SET-BY-SESSIONGUARD_OIDC_CLIENT_SECRET",
     "redirect_url": "https://sessionguard.hilden.info/oidc/callback",
     "admin_groups": [],
-    "secure_cookie": true
+    "secure_cookie": true,
+    "session_hours": 8,
+    "idle_timeout_minutes": 60
   },
 
   "access_auth": {
@@ -28,6 +30,8 @@
     "secure_cookie": true,
     "session_hours": 8,
     "username_claim": "preferred_username",
+    "reserved_usernames": ["guacadmin", "administrator", "root"],
+    "username_pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$",
     "allowed_groups": [],
     "allowed_hosts": [
       "ts.hilden.info"

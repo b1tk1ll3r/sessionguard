@@ -9,6 +9,7 @@
   "state_file": "/var/lib/sessionguard-edgeguard/state.json",
   "reload_seconds": 15,
   "max_uri_length": 8192,
+  "ipv6_prefix_length": 64,
   "global_limit": {
     "rate_per_second": 2500,
     "burst": 5000
@@ -36,6 +37,20 @@
       "name": "sessionguard-oidc",
       "host": "sessionguard.hilden.info",
       "path_prefix": "/oidc/",
+      "rate_per_second": 5,
+      "burst": 50
+    },
+    {
+      "name": "sessionguard-login",
+      "host": "sessionguard.hilden.info",
+      "path_prefix": "/login",
+      "rate_per_second": 5,
+      "burst": 50
+    },
+    {
+      "name": "sessionguard-access-login",
+      "host": "sessionguard.hilden.info",
+      "path_prefix": "/auth/login",
       "rate_per_second": 5,
       "burst": 50
     }

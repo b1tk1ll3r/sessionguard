@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/example/sessionguard/internal/model"
@@ -36,6 +38,26 @@ type Agent struct {
 	HeartbeatSeconds int              `json:"heartbeat_seconds"`
 	OIDC             model.OIDCConfig `json:"oidc"`
 	Policy           model.Policy     `json:"policy"`
+	// InsecureMasterURL permits a plain http:// master_url (e.g. over a WireGuard/NetBird
+	// tunnel). Loopback http is always allowed.
+	InsecureMasterURL bool `json:"insecure_master_url,omitempty"`
+	// LocalGuard is only read from agent.json; master and WebUI policies cannot change it.
+	LocalGuard LocalGuard `json:"local_guard"`
+	// ConfigPath is the agent.json this config was loaded from.
+	ConfigPath string `json:"-"`
+}
+
+// LocalGuard restricts what a received policy may point the agent (running as SYSTEM)
+// at. Empty lists keep the previous behavior, except that template sources inside the
+// agent's own config/data directory and UNC template sources are always refused unless
+// listed in AllowedTemplateSourceRoots.
+type LocalGuard struct {
+	AllowedStoreRoots          []string `json:"allowed_store_roots,omitempty"`
+	AllowedTemplateSourceRoots []string `json:"allowed_template_source_roots,omitempty"`
+	AllowedProfileRoots        []string `json:"allowed_profile_roots,omitempty"`
+	// ProtectedUsers are always excluded from cleanup, profile sync, auto logoff and
+	// session commands, whatever the policy says.
+	ProtectedUsers []string `json:"protected_users,omitempty"`
 }
 
 func LoadMaster(path string) (Master, error) {
@@ -111,8 +133,20 @@ func LoadMaster(path string) (Master, error) {
 		if c.AccessAuth.SessionHours <= 0 {
 			c.AccessAuth.SessionHours = 8
 		}
+		if len(c.AccessAuth.Scopes) == 0 {
+			c.AccessAuth.Scopes = c.OIDC.Scopes
+		}
+		if len(c.AccessAuth.GroupsClaims) == 0 {
+			c.AccessAuth.GroupsClaims = c.OIDC.GroupsClaims
+		}
 		if c.AccessAuth.UsernameClaim == "" {
 			c.AccessAuth.UsernameClaim = "preferred_username"
+		}
+		if c.AccessAuth.ReservedUsernames == nil {
+			c.AccessAuth.ReservedUsernames = []string{"guacadmin", "administrator", "root"}
+		}
+		if _, err := regexp.Compile(c.AccessAuth.UsernamePattern); c.AccessAuth.UsernamePattern != "" && err != nil {
+			return c, fmt.Errorf("access_auth.username_pattern: %w", err)
 		}
 		if err := validateAccessAuth(c.AccessAuth); err != nil {
 			return c, err
@@ -121,10 +155,49 @@ func LoadMaster(path string) (Master, error) {
 	if err := validateOIDC(c.OIDC); err != nil {
 		return c, err
 	}
-	if c.Broker.Enabled && strings.TrimSpace(c.Broker.APIKey) == "" {
-		return c, errors.New("broker.api_key is required when broker is enabled")
+	// Admin console access: an empty admin_groups list used to admit every
+	// IdP user. Derive it from the RBAC group mapping instead so that only
+	// users with an explicitly mapped SessionGuard role can log in.
+	if len(c.OIDC.AdminGroups) == 0 && !c.OIDC.AllowAllAuthenticatedUsers {
+		for g := range c.RBAC.Groups {
+			c.OIDC.AdminGroups = append(c.OIDC.AdminGroups, g)
+		}
+		sort.Strings(c.OIDC.AdminGroups)
+		if len(c.OIDC.AdminGroups) == 0 {
+			return c, errors.New("oidc.admin_groups or rbac.groups must be configured (or set oidc.allow_all_authenticated_users=true explicitly)")
+		}
+	}
+	if err := validateSecret("enrollment_token", c.EnrollmentToken); err != nil {
+		return c, err
+	}
+	if c.Broker.Enabled {
+		if err := validateSecret("broker.api_key", c.Broker.APIKey); err != nil {
+			return c, err
+		}
 	}
 	return c, nil
+}
+
+const minSecretLength = 24
+
+// validateSecret rejects empty, short and well-known placeholder secrets so a
+// missing environment variable cannot silently leave a value from the
+// published example configuration in effect.
+func validateSecret(label, v string) error {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return fmt.Errorf("%s is required", label)
+	}
+	lower := strings.ToLower(v)
+	for _, p := range []string{"set-by-", "replace", "change-this", "changeme", "generate-", "example", "secret"} {
+		if strings.HasPrefix(lower, p) {
+			return fmt.Errorf("%s still contains a placeholder value; set it via environment or config", label)
+		}
+	}
+	if len(v) < minSecretLength {
+		return fmt.Errorf("%s must be at least %d characters (e.g. openssl rand -hex 32)", label, minSecretLength)
+	}
+	return nil
 }
 
 func LoadAgent(path string) (Agent, error) {
@@ -133,6 +206,14 @@ func LoadAgent(path string) (Agent, error) {
 		return c, err
 	}
 	applyAgentEnv(&c)
+	if abs, err := filepath.Abs(path); err == nil {
+		c.ConfigPath = abs
+	} else {
+		c.ConfigPath = path
+	}
+	if err := validateMasterURL(c.MasterURL, c.InsecureMasterURL); err != nil {
+		return c, err
+	}
 	if c.Listen == "" {
 		c.Listen = ":9091"
 	}
@@ -184,6 +265,31 @@ func applyMasterEnv(c *Master) {
 	set("SESSIONGUARD_OIDC_CLIENT_SECRET", &c.OIDC.ClientSecret)
 	set("SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET", &c.AccessAuth.ClientSecret)
 	set("SESSIONGUARD_ALERT_WEBHOOK_URL", &c.Alerts.WebhookURL)
+}
+
+// validateMasterURL requires https so the agent token and policies are not sent in
+// clear text; http is accepted for loopback or with insecure_master_url.
+func validateMasterURL(raw string, insecure bool) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return errors.New("master_url must be an absolute URL")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		h := strings.ToLower(u.Hostname())
+		if insecure || h == "localhost" || h == "::1" || strings.HasPrefix(h, "127.") {
+			return nil
+		}
+		return errors.New("master_url must use https (set insecure_master_url=true only for an otherwise encrypted transport such as WireGuard/NetBird)")
+	default:
+		return fmt.Errorf("master_url scheme %q is not supported", u.Scheme)
+	}
 }
 
 func applyAgentEnv(c *Agent) {

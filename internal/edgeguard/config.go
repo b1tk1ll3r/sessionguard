@@ -46,6 +46,7 @@ type Config struct {
 	ReloadSeconds       int           `json:"reload_seconds"`
 	MaxURILength        int           `json:"max_uri_length"`
 	MaxTrackedIPs       int           `json:"max_tracked_ips"`
+	IPv6PrefixLength    int           `json:"ipv6_prefix_length"`
 	GlobalLimit         RateLimit     `json:"global_limit"`
 	PerIPLimit          RateLimit     `json:"per_ip_limit"`
 	Rules               []RateRule    `json:"rules"`
@@ -69,6 +70,10 @@ func DefaultConfig() Config {
 		ReloadSeconds: 15,
 		MaxURILength:  8192,
 		MaxTrackedIPs: 100000,
+		// One IPv6 end site usually receives at least a /64, so a single
+		// client can rotate through 2^64 source addresses. Rate limits,
+		// offense points and bans therefore apply to the whole /64.
+		IPv6PrefixLength: 64,
 		GlobalLimit: RateLimit{
 			RatePerSecond: 2500,
 			Burst:         5000,
@@ -81,6 +86,8 @@ func DefaultConfig() Config {
 			{Name: "access-login", PathPrefix: "/_sessionguard/auth/login", RatePerSecond: 5, Burst: 100},
 			{Name: "access-callback", PathPrefix: "/_sessionguard/auth/oidc/callback", RatePerSecond: 10, Burst: 100},
 			{Name: "admin-oidc", PathPrefix: "/oidc/", RatePerSecond: 5, Burst: 50},
+			{Name: "admin-login", PathPrefix: "/login", RatePerSecond: 5, Burst: 50},
+			{Name: "admin-access-login", PathPrefix: "/auth/login", RatePerSecond: 5, Burst: 50},
 		},
 		BlockedMethods: []string{"CONNECT", "TRACE", "TRACK"},
 		ScannerPathPrefixes: []string{
@@ -163,6 +170,12 @@ func validateConfig(cfg *Config) error {
 	}
 	if cfg.MaxTrackedIPs <= 0 {
 		cfg.MaxTrackedIPs = 100000
+	}
+	if cfg.IPv6PrefixLength == 0 {
+		cfg.IPv6PrefixLength = 64
+	}
+	if cfg.IPv6PrefixLength < 1 || cfg.IPv6PrefixLength > 128 {
+		return fmt.Errorf("ipv6_prefix_length must be between 1 and 128")
 	}
 	if err := validateRate("global_limit", cfg.GlobalLimit); err != nil {
 		return err
@@ -270,6 +283,26 @@ func containsPrefix(prefixes []netip.Prefix, ip netip.Addr) bool {
 		}
 	}
 	return false
+}
+
+// ClientKey returns the prefix that identifies one client for rate limits,
+// offense points and temporary bans. IPv4 (including IPv4-mapped IPv6)
+// clients are tracked per /32; IPv6 clients are aggregated to the configured
+// prefix length (default /64) so rotating addresses inside one allocation
+// cannot bypass per-client limits or exhaust the state table.
+func (r *RuntimeConfig) ClientKey(ip netip.Addr) netip.Prefix {
+	return clientKey(ip, r.IPv6PrefixLength)
+}
+
+func clientKey(ip netip.Addr, ipv6Bits int) netip.Prefix {
+	ip = ip.Unmap().WithZone("")
+	if ip.Is4() {
+		return netip.PrefixFrom(ip, 32)
+	}
+	if ipv6Bits <= 0 || ipv6Bits > 128 {
+		ipv6Bits = 64
+	}
+	return netip.PrefixFrom(ip, ipv6Bits).Masked()
 }
 
 func (r *RuntimeConfig) HostAllowed(host string) bool {

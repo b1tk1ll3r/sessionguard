@@ -144,3 +144,44 @@ Do not run both auth middlewares on the Guacamole router. A safe migration is:
 - Session older than `session_hours`: denied even if Guacamole still holds an old auth token.
 - PocketID back-channel logout: corresponding SessionGuard sessions are revoked immediately; the browser-side poll closes an already-open Guacamole page within about 30 seconds.
 - Guacamole logout button: an explicit user click performs full SessionGuard/PocketID OIDC logout. If Guacamole merely loses its local token (for example after worker failover/restart), SessionGuard keeps the upstream access session and re-enters Guacamole through header auth.
+
+## Identity protection (v0.6)
+
+The username emitted as `X-Guacamole-User` *is* the Guacamole account. Because Pocket ID usernames are mutable, SessionGuard additionally enforces:
+
+| Control | Behavior |
+|---|---|
+| **Identity binding** | On first login a username is permanently bound to the immutable OIDC `sub`. A different `sub` using the same username (case-insensitive) is rejected, and so is a bound `sub` that shows up with a new username (IdP-side rename). Conflicts are audited as `identity_binding_conflict`. On upgrade, bindings are seeded from the existing access sessions (oldest first). |
+| **Reserved usernames** | `access_auth.reserved_usernames` (default `guacadmin`, `administrator`, `root`) can never be used. The check also runs on every ForwardAuth request, so existing sessions stop working immediately. |
+| **Username pattern** | `access_auth.username_pattern` (default `^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`) rejects Unicode look-alikes (e.g. a Cyrillic `а` in `guаcadmin`), whitespace and control characters. |
+| **Header-only Guacamole logins** | The SessionGuard Guacamole extension vetoes every login that was not authenticated by the `header` provider with a matching identity header. Username/password logins against the JDBC database (e.g. `guacadmin`/`guacadmin` via `POST /api/tokens`) are therefore rejected even for users who passed ForwardAuth. Disable only for break-glass with `SESSIONGUARD_ENFORCE_HEADER_AUTH=false`. |
+
+After a **legitimate rename** in Pocket ID, an admin releases the old binding in the Master console under *Access-Sessions → Identity bindings* (or `DELETE /api/v1/access/identities/{username}`). This also ends the user's access sessions; the next login binds the new name. Note that Guacamole treats the new name as a new account, so connection permissions must be granted again (or assigned to Guacamole groups in the first place).
+
+### Pocket ID
+
+- In the Pocket ID admin UI under *Application Configuration*, disable the option that lets users **edit their own account details** (wording depends on the Pocket ID version). SessionGuard's binding stops the takeover even if this stays enabled, but a self-rename then locks the user out until an admin releases the binding.
+- Register the back-channel logout endpoints if your Pocket ID version supports them:
+  - Guacamole access client: `https://<guac-host>/_sessionguard/auth/backchannel-logout`
+  - SessionGuard admin client: `https://<sessionguard-host>/oidc/backchannel-logout`
+
+### Remove `guacadmin`
+
+`initdb.sh` creates `guacadmin` with the password `guacadmin`. Grant a real admin Guacamole administrator rights and delete the default account:
+
+```bash
+docker exec -i guacamole-postgres psql -U guacamole_user -d guacamole_db \
+  -v ON_ERROR_STOP=1 -v admin_user=YOUR_POCKETID_USERNAME \
+  < production/guacamole/harden-guacamole-db.sql
+```
+
+The script is idempotent, creates the admin account if it has never logged in, and lists the remaining Guacamole administrators. For **new** installations, `guac-init` runs it automatically as `002-sessionguard-hardening.sql` with `GUAC_ADMIN_USER` from `.env`.
+
+## Admin console sessions (v0.6)
+
+Director/admin logins are server-side sessions (opaque cookie, only the SHA-256 is kept in memory):
+
+- `oidc.session_hours` (default 8) is the absolute lifetime and `oidc.idle_timeout_minutes` (default 60) the inactivity timeout.
+- Group membership is re-checked against `admin_groups` on every request.
+- Logout, the *Admin sessions* panel (`GET/DELETE /api/v1/admin/sessions`) and Pocket ID back-channel logout end a session immediately.
+- A Master restart ends all admin sessions; users simply log in again through Pocket ID SSO.

@@ -20,8 +20,19 @@
         Strict-Transport-Security "max-age=31536000"
         X-Content-Type-Options "nosniff"
         Referrer-Policy "strict-origin-when-cross-origin"
-        Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
     }
+}
+
+# Permissions-Policy is set per site: the Guacamole host additionally needs
+# the Window Management API for the multi-monitor helper.
+(permissions_policy_default) {
+    header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+}
+
+(permissions_policy_guacamole) {
+    # window-management: getScreenDetails() for the SessionGuard
+    # multi-monitor helper; fullscreen: Guacamole/multi-monitor fullscreen.
+    header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), fullscreen=(self), window-management=(self)"
 }
 
 (edgeguard_check) {
@@ -40,15 +51,36 @@
 {$GUAC_HOST} {
     encode zstd gzip
     import edge_security_headers
+    import permissions_policy_guacamole
 
     route {
         # Security pre-check occurs before OIDC/Auth and before any backend.
         import edgeguard_check
 
-        # These endpoints belong to SessionGuard, but intentionally live on
-        # the Guacamole hostname so the Access-Auth cookie remains host-bound.
-        handle_path /_sessionguard/* {
+        # Only the Access-Auth endpoints (/auth/login, /auth/oidc/callback,
+        # /auth/logout, /auth/backchannel-logout, /auth/status, /auth/verify,
+        # /auth/display-policy) belong on the Guacamole hostname so the
+        # Access-Auth cookie remains host-bound. /_sessionguard is stripped,
+        # so the Master receives /auth/... . The rest of the Master (admin UI,
+        # /api/v1/*, /metrics) must never be reachable through this host.
+        #
+        # The three handle blocks are siblings and therefore mutually
+        # exclusive; inside a route they are evaluated in the written order,
+        # so the narrow /auth/* block must stay first.
+        handle /_sessionguard/auth/* {
+            uri strip_prefix /_sessionguard
+            # Never pass client-supplied identity headers to the Master.
+            request_header -X-Guacamole-User
+            request_header -X-SessionGuard-User
+            request_header -X-SessionGuard-Email
+            request_header -X-SessionGuard-Groups
+            request_header -X-Forwarded-User
+            request_header -X-Authenticated-User
             reverse_proxy {$SESSIONGUARD_IP}:8080
+        }
+
+        handle /_sessionguard/* {
+            respond 404
         }
 
         handle {
@@ -105,6 +137,7 @@
 {$SESSIONGUARD_HOST} {
     encode zstd gzip
     import edge_security_headers
+    import permissions_policy_default
 
     route {
         import edgeguard_check

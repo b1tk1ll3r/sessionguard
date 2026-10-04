@@ -1,6 +1,7 @@
 package edgeguard
 
 import (
+	"container/list"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -26,10 +27,13 @@ type offenseState struct {
 }
 
 type clientState struct {
+	key      netip.Prefix
 	bucket   bucket
 	rules    map[string]*bucket
 	offense  offenseState
 	lastSeen time.Time
+	// elem is the entry in Guard.lru (front = most recently seen).
+	elem *list.Element
 }
 
 type persistedState struct {
@@ -47,7 +51,8 @@ type Counters struct {
 	DeniedMethod    atomic.Uint64
 	DeniedHost      atomic.Uint64
 	DeniedInvalid   atomic.Uint64
-	DeniedCapacity  atomic.Uint64
+	StateEvictions  atomic.Uint64
+	BansDropped     atomic.Uint64
 	AutoBans        atomic.Uint64
 }
 
@@ -59,11 +64,17 @@ type Decision struct {
 }
 
 type Guard struct {
-	mu         sync.Mutex
-	cfg        atomic.Pointer[RuntimeConfig]
-	global     bucket
-	clients    map[netip.Addr]*clientState
-	bans       map[netip.Addr]time.Time
+	mu     sync.Mutex
+	cfg    atomic.Pointer[RuntimeConfig]
+	global bucket
+	// clients and bans are keyed by RuntimeConfig.ClientKey: /32 for IPv4,
+	// the configured prefix (default /64) for IPv6.
+	clients map[netip.Prefix]*clientState
+	// lru orders clients by last activity so the bounded table can evict the
+	// least-recently-seen entry in O(1) instead of rejecting new clients.
+	// Temporary bans live in the separate bans map and are never evicted.
+	lru        *list.List
+	bans       map[netip.Prefix]time.Time
 	stateDirty bool
 	counters   Counters
 	logger     *slog.Logger
@@ -74,12 +85,13 @@ func NewGuard(cfg *RuntimeConfig, logger *slog.Logger) *Guard {
 		logger = slog.Default()
 	}
 	g := &Guard{
-		clients: make(map[netip.Addr]*clientState),
-		bans:    make(map[netip.Addr]time.Time),
+		clients: make(map[netip.Prefix]*clientState),
+		lru:     list.New(),
+		bans:    make(map[netip.Prefix]time.Time),
 		logger:  logger,
 	}
 	g.cfg.Store(cfg)
-	g.loadState(cfg.StateFile)
+	g.loadState(cfg.StateFile, cfg.IPv6PrefixLength)
 	return g
 }
 
@@ -87,9 +99,30 @@ func (g *Guard) Config() *RuntimeConfig { return g.cfg.Load() }
 
 func (g *Guard) ReplaceConfig(cfg *RuntimeConfig) {
 	old := g.cfg.Swap(cfg)
+	if old != nil && old.IPv6PrefixLength != cfg.IPv6PrefixLength {
+		g.rekey(cfg.IPv6PrefixLength)
+	}
 	if old == nil || old.Fingerprint() != cfg.Fingerprint() {
 		g.logger.Info("edgeguard configuration loaded", "fingerprint", cfg.Fingerprint()[:12])
 	}
+}
+
+// rekey adapts existing state after ipv6_prefix_length changed: bans
+// are re-keyed (keeping the latest expiry) and per-client buckets are reset.
+func (g *Guard) rekey(ipv6Bits int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	bans := make(map[netip.Prefix]time.Time, len(g.bans))
+	for key, until := range g.bans {
+		nk := clientKey(key.Addr(), ipv6Bits)
+		if prev, ok := bans[nk]; !ok || until.After(prev) {
+			bans[nk] = until
+		}
+	}
+	g.bans = bans
+	g.clients = make(map[netip.Prefix]*clientState)
+	g.lru.Init()
+	g.stateDirty = true
 }
 
 func (g *Guard) Check(ip netip.Addr, host, method, rawURI string, now time.Time) Decision {
@@ -102,16 +135,21 @@ func (g *Guard) Check(ip netip.Addr, host, method, rawURI string, now time.Time)
 		g.counters.DeniedInvalid.Add(1)
 		return Decision{StatusCode: 400, Reason: "invalid client ip"}
 	}
+	ip = ip.Unmap()
+	// Blacklist and rate-exempt lists match the exact address; all mutable
+	// per-client state (buckets, offenses, bans) uses the aggregated key.
+	key := cfg.ClientKey(ip)
+
 	if len(rawURI) == 0 || len(rawURI) > cfg.MaxURILength {
 		g.counters.DeniedInvalid.Add(1)
-		g.addOffense(ip, cfg.AutoBan.InvalidURIWeight, now, cfg)
+		g.addOffense(key, cfg.AutoBan.InvalidURIWeight, now, cfg)
 		return Decision{StatusCode: 414, Reason: "invalid uri"}
 	}
 
 	path, ok := normalizeRequestPath(rawURI)
 	if !ok {
 		g.counters.DeniedInvalid.Add(1)
-		g.addOffense(ip, cfg.AutoBan.InvalidURIWeight, now, cfg)
+		g.addOffense(key, cfg.AutoBan.InvalidURIWeight, now, cfg)
 		return Decision{StatusCode: 400, Reason: "invalid uri"}
 	}
 
@@ -125,25 +163,25 @@ func (g *Guard) Check(ip netip.Addr, host, method, rawURI string, now time.Time)
 	}
 
 	g.mu.Lock()
-	if until, ok := g.bans[ip]; ok {
+	if until, ok := g.bans[key]; ok {
 		if now.Before(until) {
 			g.mu.Unlock()
 			g.counters.DeniedBan.Add(1)
 			return Decision{StatusCode: 403, Reason: "temporarily banned", RetryAfter: max(1, int(until.Sub(now).Seconds()))}
 		}
-		delete(g.bans, ip)
+		delete(g.bans, key)
 		g.stateDirty = true
 	}
 	g.mu.Unlock()
 
 	if cfg.MethodBlocked(method) {
 		g.counters.DeniedMethod.Add(1)
-		g.addOffense(ip, cfg.AutoBan.MethodWeight, now, cfg)
+		g.addOffense(key, cfg.AutoBan.MethodWeight, now, cfg)
 		return Decision{StatusCode: 405, Reason: "method blocked"}
 	}
 	if scannerPath(path, cfg.ScannerPathPrefixes) {
 		g.counters.DeniedScanner.Add(1)
-		g.addOffense(ip, cfg.AutoBan.ScannerWeight, now, cfg)
+		g.addOffense(key, cfg.AutoBan.ScannerWeight, now, cfg)
 		return Decision{StatusCode: 404, Reason: "scanner path"}
 	}
 
@@ -154,20 +192,11 @@ func (g *Guard) Check(ip netip.Addr, host, method, rawURI string, now time.Time)
 		return Decision{StatusCode: 429, Reason: "global rate limit", RetryAfter: 1}
 	}
 
-	cs := g.clients[ip]
-	if cs == nil {
-		if len(g.clients) >= cfg.MaxTrackedIPs {
-			g.counters.DeniedCapacity.Add(1)
-			return Decision{StatusCode: 429, Reason: "edge state capacity", RetryAfter: 1}
-		}
-		cs = &clientState{rules: make(map[string]*bucket), lastSeen: now}
-		g.clients[ip] = cs
-	}
-	cs.lastSeen = now
+	cs := g.clientLocked(key, now, cfg)
 	if !cfg.IsRateExempt(ip) {
 		if !take(&cs.bucket, cfg.PerIPLimit.RatePerSecond, cfg.PerIPLimit.Burst, now) {
 			g.counters.DeniedRate.Add(1)
-			g.addOffenseLocked(ip, cs, cfg.AutoBan.RateLimitWeight, now, cfg)
+			g.addOffenseLocked(key, cs, cfg.AutoBan.RateLimitWeight, now, cfg)
 			return Decision{StatusCode: 429, Reason: "per-ip rate limit", RetryAfter: 1}
 		}
 		if rule := cfg.MatchingRule(host, path); rule != nil {
@@ -178,7 +207,7 @@ func (g *Guard) Check(ip netip.Addr, host, method, rawURI string, now time.Time)
 			}
 			if !take(rb, rule.RatePerSecond, rule.Burst, now) {
 				g.counters.DeniedRate.Add(1)
-				g.addOffenseLocked(ip, cs, cfg.AutoBan.RateLimitWeight, now, cfg)
+				g.addOffenseLocked(key, cs, cfg.AutoBan.RateLimitWeight, now, cfg)
 				return Decision{StatusCode: 429, Reason: "endpoint rate limit", RetryAfter: 1}
 			}
 		}
@@ -239,24 +268,48 @@ func scannerPath(path string, prefixes []string) bool {
 	return false
 }
 
-func (g *Guard) addOffense(ip netip.Addr, weight int, now time.Time, cfg *RuntimeConfig) {
+// clientLocked returns the state for key, creating it if necessary. When the
+// bounded table is full, the least-recently-seen entries are evicted instead
+// of rejecting the new client, so an attacker rotating source prefixes cannot
+// lock legitimate clients out. Evicting an entry only resets its token buckets
+// and offense points; active bans are stored separately and are kept.
+// g.mu must be held.
+func (g *Guard) clientLocked(key netip.Prefix, now time.Time, cfg *RuntimeConfig) *clientState {
+	if cs := g.clients[key]; cs != nil {
+		cs.lastSeen = now
+		g.lru.MoveToFront(cs.elem)
+		return cs
+	}
+	for len(g.clients) >= cfg.MaxTrackedIPs {
+		oldest := g.lru.Back()
+		if oldest == nil {
+			break
+		}
+		g.removeClientLocked(oldest.Value.(*clientState))
+		g.counters.StateEvictions.Add(1)
+	}
+	cs := &clientState{key: key, rules: make(map[string]*bucket), lastSeen: now}
+	cs.elem = g.lru.PushFront(cs)
+	g.clients[key] = cs
+	return cs
+}
+
+func (g *Guard) removeClientLocked(cs *clientState) {
+	g.lru.Remove(cs.elem)
+	delete(g.clients, cs.key)
+}
+
+func (g *Guard) addOffense(key netip.Prefix, weight int, now time.Time, cfg *RuntimeConfig) {
 	if weight <= 0 || !cfg.AutoBan.Enabled {
 		return
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	cs := g.clients[ip]
-	if cs == nil {
-		if len(g.clients) >= cfg.MaxTrackedIPs {
-			return
-		}
-		cs = &clientState{rules: make(map[string]*bucket), lastSeen: now}
-		g.clients[ip] = cs
-	}
-	g.addOffenseLocked(ip, cs, weight, now, cfg)
+	cs := g.clientLocked(key, now, cfg)
+	g.addOffenseLocked(key, cs, weight, now, cfg)
 }
 
-func (g *Guard) addOffenseLocked(ip netip.Addr, cs *clientState, weight int, now time.Time, cfg *RuntimeConfig) {
+func (g *Guard) addOffenseLocked(key netip.Prefix, cs *clientState, weight int, now time.Time, cfg *RuntimeConfig) {
 	if weight <= 0 || !cfg.AutoBan.Enabled {
 		return
 	}
@@ -269,12 +322,40 @@ func (g *Guard) addOffenseLocked(ip netip.Addr, cs *clientState, weight int, now
 	if cs.offense.points < cfg.AutoBan.Threshold {
 		return
 	}
-	until := now.Add(time.Duration(cfg.AutoBan.BanSeconds) * time.Second)
-	g.bans[ip] = until
 	cs.offense = offenseState{}
+	if _, exists := g.bans[key]; !exists && len(g.bans) >= cfg.MaxTrackedIPs {
+		// Existing bans are never evicted to make room; the request that
+		// triggered this offense has already been denied anyway. Expired
+		// bans are purged by Cleanup.
+		g.counters.BansDropped.Add(1)
+		return
+	}
+	until := now.Add(time.Duration(cfg.AutoBan.BanSeconds) * time.Second)
+	g.bans[key] = until
 	g.counters.AutoBans.Add(1)
-	g.logger.Warn("temporary IP ban", "ip", ip.String(), "until", until.UTC().Format(time.RFC3339))
+	g.logger.Warn("temporary IP ban", "ip", keyString(key), "until", until.UTC().Format(time.RFC3339))
 	g.stateDirty = true
+}
+
+// keyString renders single-address keys as a plain address (compatible with
+// the previous state-file format) and aggregated IPv6 keys as CIDR.
+func keyString(key netip.Prefix) string {
+	if key.IsSingleIP() {
+		return key.Addr().String()
+	}
+	return key.String()
+}
+
+// parseKey accepts a plain address or CIDR from the state file and re-keys it
+// with the current IPv6 aggregation length.
+func parseKey(raw string, ipv6Bits int) (netip.Prefix, bool) {
+	if p, err := netip.ParsePrefix(raw); err == nil {
+		return clientKey(p.Addr(), ipv6Bits), true
+	}
+	if a, err := netip.ParseAddr(raw); err == nil {
+		return clientKey(a, ipv6Bits), true
+	}
+	return netip.Prefix{}, false
 }
 
 func (g *Guard) Cleanup(now time.Time) {
@@ -284,18 +365,31 @@ func (g *Guard) Cleanup(now time.Time) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	for ip, until := range g.bans {
+	for key, until := range g.bans {
 		if !now.Before(until) {
-			delete(g.bans, ip)
+			delete(g.bans, key)
 			g.stateDirty = true
 		}
 	}
+	// The LRU list is ordered by last activity, so stale entries are at the
+	// back and the walk stops at the first recently seen client.
 	stale := now.Add(-30 * time.Minute)
-	for ip, cs := range g.clients {
-		if cs.lastSeen.Before(stale) {
-			delete(g.clients, ip)
+	for e := g.lru.Back(); e != nil; {
+		cs := e.Value.(*clientState)
+		if !cs.lastSeen.Before(stale) {
+			break
 		}
+		prev := e.Prev()
+		g.removeClientLocked(cs)
+		e = prev
 	}
+}
+
+// TrackedClients returns the number of entries in the bounded client table.
+func (g *Guard) TrackedClients() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.clients)
 }
 
 func (g *Guard) ActiveBans(now time.Time) int {
@@ -310,7 +404,7 @@ func (g *Guard) ActiveBans(now time.Time) int {
 	return n
 }
 
-func (g *Guard) loadState(path string) {
+func (g *Guard) loadState(path string, ipv6Bits int) {
 	if strings.TrimSpace(path) == "" {
 		return
 	}
@@ -328,9 +422,11 @@ func (g *Guard) loadState(path string) {
 	}
 	now := time.Now()
 	for raw, until := range state.Bans {
-		ip, err := netip.ParseAddr(raw)
-		if err == nil && now.Before(until) {
-			g.bans[ip] = until
+		key, ok := parseKey(raw, ipv6Bits)
+		if ok && now.Before(until) {
+			if prev, exists := g.bans[key]; !exists || until.After(prev) {
+				g.bans[key] = until
+			}
 		}
 	}
 }
@@ -348,9 +444,9 @@ func (g *Guard) FlushState() {
 	}
 	state := persistedState{Bans: make(map[string]time.Time)}
 	now := time.Now()
-	for ip, until := range g.bans {
+	for key, until := range g.bans {
 		if now.Before(until) {
-			state.Bans[ip.String()] = until
+			state.Bans[keyString(key)] = until
 		}
 	}
 	g.stateDirty = false
@@ -413,15 +509,21 @@ sessionguard_edgeguard_denied_host_total %d
 # HELP sessionguard_edgeguard_denied_invalid_total Requests denied because the client IP or URI was invalid.
 # TYPE sessionguard_edgeguard_denied_invalid_total counter
 sessionguard_edgeguard_denied_invalid_total %d
-# HELP sessionguard_edgeguard_denied_capacity_total Requests denied because the bounded per-IP state table is full.
-# TYPE sessionguard_edgeguard_denied_capacity_total counter
-sessionguard_edgeguard_denied_capacity_total %d
+# HELP sessionguard_edgeguard_state_evictions_total Least-recently-seen client entries evicted because the bounded state table was full.
+# TYPE sessionguard_edgeguard_state_evictions_total counter
+sessionguard_edgeguard_state_evictions_total %d
+# HELP sessionguard_edgeguard_bans_dropped_total Temporary bans not recorded because the ban table was full.
+# TYPE sessionguard_edgeguard_bans_dropped_total counter
+sessionguard_edgeguard_bans_dropped_total %d
 # HELP sessionguard_edgeguard_autobans_total Temporary bans created.
 # TYPE sessionguard_edgeguard_autobans_total counter
 sessionguard_edgeguard_autobans_total %d
 # HELP sessionguard_edgeguard_active_bans Current temporary bans.
 # TYPE sessionguard_edgeguard_active_bans gauge
 sessionguard_edgeguard_active_bans %d
+# HELP sessionguard_edgeguard_tracked_clients Current entries in the bounded per-client state table.
+# TYPE sessionguard_edgeguard_tracked_clients gauge
+sessionguard_edgeguard_tracked_clients %d
 `,
 		g.counters.Requests.Load(),
 		g.counters.Allowed.Load(),
@@ -433,8 +535,10 @@ sessionguard_edgeguard_active_bans %d
 		g.counters.DeniedMethod.Load(),
 		g.counters.DeniedHost.Load(),
 		g.counters.DeniedInvalid.Load(),
-		g.counters.DeniedCapacity.Load(),
+		g.counters.StateEvictions.Load(),
+		g.counters.BansDropped.Load(),
 		g.counters.AutoBans.Load(),
 		g.ActiveBans(time.Now()),
+		g.TrackedClients(),
 	)
 }

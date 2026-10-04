@@ -8,8 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -27,7 +29,18 @@ type AccessSessionStore interface {
 	DeleteAuthSession(hash string) error
 	RevokeAuthSessions(sid, sub string) (int, error)
 	CleanupAuthSessions(time.Time) error
+	// BindIdentity pins a username to an OIDC subject; it returns
+	// ErrIdentityConflict if either is already bound differently.
+	BindIdentity(username, subject, issuer string, now time.Time) error
 }
+
+// ErrIdentityConflict is returned when a username is bound to a different
+// OIDC subject (or the subject to a different username).
+var ErrIdentityConflict = errors.New("identity is bound to a different account")
+
+// DefaultUsernamePattern accepts Pocket ID style usernames and rejects
+// Unicode look-alikes, whitespace and control characters.
+const DefaultUsernamePattern = `^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`
 
 type accessPending struct {
 	Nonce        string
@@ -47,6 +60,24 @@ type AccessManager struct {
 	mu         sync.Mutex
 	pending    map[string]accessPending
 	logoutSeen map[string]time.Time
+	usernameRE *regexp.Regexp
+	// lastCleanup throttles expired-session cleanup triggered by logins.
+	lastCleanup time.Time
+}
+
+// maxPendingLogins bounds unauthenticated login state. When full, an
+// arbitrary entry is evicted: under a flood these are almost always the
+// attacker's own, while a legitimate user simply restarts the login.
+const maxPendingLogins = 10000
+
+func evictOnePendingIfFull[V any](m map[string]V) {
+	if len(m) < maxPendingLogins {
+		return
+	}
+	for k := range m {
+		delete(m, k)
+		return
+	}
 }
 
 func NewAccess(ctx context.Context, cfg model.AccessAuthConfig, sessions AccessSessionStore) (*AccessManager, error) {
@@ -64,10 +95,19 @@ func NewAccess(ctx context.Context, cfg model.AccessAuthConfig, sessions AccessS
 		EndSessionEndpoint string `json:"end_session_endpoint"`
 	}
 	_ = p.Claims(&discovery)
+	pattern := cfg.UsernamePattern
+	if pattern == "" {
+		pattern = DefaultUsernamePattern
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
 	return &AccessManager{
-		cfg:      cfg,
-		provider: p,
-		verifier: p.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
+		usernameRE: re,
+		cfg:        cfg,
+		provider:   p,
+		verifier:   p.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
 		// Back-channel logout tokens are not ID tokens and may omit exp. We
 		// still verify issuer, audience and signature, then validate the
 		// logout-specific claims below.
@@ -75,7 +115,7 @@ func NewAccess(ctx context.Context, cfg model.AccessAuthConfig, sessions AccessS
 		oauth: oauth2.Config{
 			ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
 			Endpoint: p.Endpoint(), RedirectURL: cfg.RedirectURL,
-			Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"},
+			Scopes: scopesOrDefault(cfg.Scopes),
 		},
 		sessions:   sessions,
 		endSession: discovery.EndSessionEndpoint,
@@ -98,14 +138,24 @@ func (m *AccessManager) Register(mux *http.ServeMux) {
 }
 
 func (m *AccessManager) Login(w http.ResponseWriter, r *http.Request) {
-	_ = m.sessions.CleanupAuthSessions(time.Now().UTC())
 	target := m.validReturnURL(r.URL.Query().Get("return"))
 	state, nonce := randomAccessToken(24), randomAccessToken(24)
 	verifier := oauth2.GenerateVerifier()
+	now := time.Now()
 	m.mu.Lock()
-	m.prunePendingLocked(time.Now())
+	// Session cleanup takes the store write lock and may persist the whole
+	// state; unauthenticated login hits must not trigger it every time.
+	cleanup := now.Sub(m.lastCleanup) > time.Minute
+	if cleanup {
+		m.lastCleanup = now
+	}
+	m.prunePendingLocked(now)
+	evictOnePendingIfFull(m.pending)
 	m.pending[state] = accessPending{Nonce: nonce, CodeVerifier: verifier, ReturnURL: target, Exp: time.Now().Add(5 * time.Minute)}
 	m.mu.Unlock()
+	if cleanup {
+		_ = m.sessions.CleanupAuthSessions(now.UTC())
+	}
 
 	// One state cookie per login flow avoids the common multi-tab race where a
 	// second login overwrites the first flow's single state cookie.
@@ -179,9 +229,22 @@ func (m *AccessManager) Callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OIDC token has no usable username claim", http.StatusForbidden)
 		return
 	}
-	groups := claimStrings(claims, "groups")
+	if err := m.checkUsername(username); err != nil {
+		log.Printf("access login denied for subject %q: %v", idToken.Subject, err)
+		http.Error(w, "this account cannot be used for Guacamole access; please contact your administrator", http.StatusForbidden)
+		return
+	}
+	groups := GroupsFromClaims(claims, m.cfg.GroupsClaims)
 	if !allowedGroups(groups, m.cfg.AllowedGroups) {
 		http.Error(w, "user is not in an allowed access group", http.StatusForbidden)
+		return
+	}
+	// The username becomes the Guacamole identity (X-Guacamole-User). Pin it
+	// to the immutable subject so that renaming an IdP account cannot take
+	// over another user's Guacamole account.
+	if err := m.sessions.BindIdentity(username, idToken.Subject, idToken.Issuer, time.Now().UTC()); err != nil {
+		log.Printf("access login denied for subject %q as %q: %v", idToken.Subject, username, err)
+		http.Error(w, "this username is bound to a different account; please contact your administrator", http.StatusForbidden)
 		return
 	}
 
@@ -285,36 +348,9 @@ func (m *AccessManager) BackchannelLogout(w http.ResponseWriter, r *http.Request
 		http.Error(w, "invalid logout_token", http.StatusBadRequest)
 		return
 	}
-	var claims struct {
-		SID    string                     `json:"sid"`
-		Sub    string                     `json:"sub"`
-		Nonce  string                     `json:"nonce"`
-		JTI    string                     `json:"jti"`
-		IAT    int64                      `json:"iat"`
-		Events map[string]json.RawMessage `json:"events"`
-	}
-	if err := tok.Claims(&claims); err != nil {
-		http.Error(w, "invalid logout_token claims", http.StatusBadRequest)
-		return
-	}
-	if claims.Nonce != "" || claims.Events == nil {
-		http.Error(w, "invalid logout_token claims", http.StatusBadRequest)
-		return
-	}
-	if _, ok := claims.Events[backchannelLogoutEvent]; !ok {
-		http.Error(w, "missing backchannel logout event", http.StatusBadRequest)
-		return
-	}
-	if claims.SID == "" && claims.Sub == "" {
-		http.Error(w, "logout_token has neither sid nor sub", http.StatusBadRequest)
-		return
-	}
-	if strings.TrimSpace(claims.JTI) == "" {
-		http.Error(w, "logout_token has no jti", http.StatusBadRequest)
-		return
-	}
-	if claims.IAT == 0 || time.Since(time.Unix(claims.IAT, 0)) > 10*time.Minute || time.Until(time.Unix(claims.IAT, 0)) > 5*time.Minute {
-		http.Error(w, "logout_token iat outside allowed window", http.StatusBadRequest)
+	claims, err := validateLogoutToken(tok, time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if !m.acceptLogoutJTI(claims.JTI, time.Now()) {
@@ -328,12 +364,28 @@ func (m *AccessManager) BackchannelLogout(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusOK)
 }
 
+// SessionFromRequest returns the valid (unexpired, unrevoked) access session
+// referenced by the request cookie. It is used by Master endpoints which are
+// published below the Guacamole access-auth prefix.
+func (m *AccessManager) SessionFromRequest(r *http.Request) (model.AuthSession, bool) {
+	if m == nil {
+		return model.AuthSession{}, false
+	}
+	return m.sessionFromRequest(r)
+}
+
 func (m *AccessManager) sessionFromRequest(r *http.Request) (model.AuthSession, bool) {
 	c, err := r.Cookie(m.cfg.CookieName)
 	if err != nil || strings.TrimSpace(c.Value) == "" {
 		return model.AuthSession{}, false
 	}
-	return m.sessions.GetAuthSession(hashAccessToken(c.Value))
+	sess, ok := m.sessions.GetAuthSession(hashAccessToken(c.Value))
+	// Re-check on every request so sessions created before a reserved name
+	// or a stricter pattern was configured stop working immediately.
+	if !ok || m.checkUsername(sess.Username) != nil {
+		return model.AuthSession{}, false
+	}
+	return sess, true
 }
 
 func (m *AccessManager) setSessionCookie(w http.ResponseWriter, token string, maxAge int) {
@@ -418,16 +470,7 @@ func (m *AccessManager) validReturnURL(raw string) string {
 func (m *AccessManager) acceptLogoutJTI(jti string, now time.Time) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for k, exp := range m.logoutSeen {
-		if !now.Before(exp) {
-			delete(m.logoutSeen, k)
-		}
-	}
-	if _, exists := m.logoutSeen[jti]; exists {
-		return false
-	}
-	m.logoutSeen[jti] = now.Add(15 * time.Minute)
-	return true
+	return acceptJTI(m.logoutSeen, jti, now)
 }
 
 func (m *AccessManager) prunePendingLocked(now time.Time) {
@@ -438,24 +481,39 @@ func (m *AccessManager) prunePendingLocked(now time.Time) {
 	}
 }
 
+// checkUsername rejects reserved and malformed Guacamole identities.
+func (m *AccessManager) checkUsername(username string) error {
+	re := m.usernameRE
+	if re == nil {
+		re = regexp.MustCompile(DefaultUsernamePattern)
+	}
+	if !re.MatchString(username) {
+		return errors.New("username does not match access_auth.username_pattern")
+	}
+	for _, reserved := range m.cfg.ReservedUsernames {
+		if strings.EqualFold(strings.TrimSpace(reserved), username) {
+			return errors.New("username is reserved")
+		}
+	}
+	return nil
+}
+
 func allowedGroups(got, allowed []string) bool {
 	if len(allowed) == 0 {
 		return true
 	}
-	set := map[string]struct{}{}
 	for _, g := range got {
-		set[strings.ToLower(strings.TrimSpace(g))] = struct{}{}
-	}
-	for _, g := range allowed {
-		if _, ok := set[strings.ToLower(strings.TrimSpace(g))]; ok {
-			return true
+		for _, a := range allowed {
+			if GroupMatches(g, a) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
 func claimString(claims map[string]any, key string) string {
-	v, ok := claims[key]
+	v, ok := claimAt(claims, key)
 	if !ok {
 		return ""
 	}
@@ -466,7 +524,7 @@ func claimString(claims map[string]any, key string) string {
 }
 
 func claimStrings(claims map[string]any, key string) []string {
-	v, ok := claims[key]
+	v, ok := claimAt(claims, key)
 	if !ok {
 		return nil
 	}

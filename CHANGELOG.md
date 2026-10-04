@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.6.0 — Multi-Monitor (Span) + Security-Hardening
+
+### Multi-Monitor
+
+- Neuer Span-Modus für Guacamole-Desktops: Die Extension (`js/sessionguard-multimonitor.js`) legt die Sitzung in ein Browserfenster über mehrere lokale Monitore; mit `resize-method=display-update` folgt die RDP-Auflösung. In Chrome/Edge läuft das automatisch über die Window Management API, in anderen Browsern zieht der Benutzer das Fenster selbst auf. Berücksichtigt die guacd-Grenze von 8192 px.
+- Resource-Felder `multi_monitor`, `max_monitors` (2–4) und `multi_monitor_groups` sowie ein Editor dafür in der Master-WebUI.
+- Neuer Endpoint `GET /auth/display-policy` (unter `/_sessionguard/auth`, Access-Session erforderlich).
+- Caddy: `Permissions-Policy` auf dem Guacamole-Host erlaubt `window-management=(self)` und `fullscreen=(self)`.
+- Siehe `docs/MULTI-MONITOR.md`. Guacamole 1.6 hat kein natives RDP-Multi-Monitor; die Upstream-PRs sind noch Drafts.
+
+### Keycloak
+
+- OIDC is no longer PocketID-specific. New fields `oidc.scopes` / `access_auth.scopes`: Keycloak rejects the previously hard-coded `groups` scope with `invalid_scope`. New fields `groups_claims` take claim names or dot paths (`realm_access.roles`, `resource_access.<client>.roles`). `access_auth` inherits both from `oidc`.
+- Group comparison ignores a leading `/`, so Keycloak's "Full group path" (`/sessionguard-admins`) matches `rbac.groups`, `admin_groups`, `allowed_groups` and multi-monitor groups.
+- Identity bindings store the issuer. After an IdP switch, the audit log shows the cause, and admins can reset all bindings deliberately (`DELETE /api/v1/access/identities?confirm=all`, UI button).
+- Guide and example: `docs/KEYCLOAK.md`, `configs/master.keycloak.example.json`.
+
+### Security
+
+- **Guacamole account takeover via PocketID rename closed:** Guacamole usernames are bound to the immutable OIDC `sub` (`identity_bindings`, seeded from existing sessions). A different `sub` with the same name, or a renamed account, is rejected and audited. Reserved names (`guacadmin`, `administrator`, `root`) and usernames outside `username_pattern` (no Unicode look-alikes) are never accepted, and this is checked on every ForwardAuth request too. Admins can release bindings in the UI ("Identitätsbindungen").
+- **Guacamole extension accepts header logins only:** Logins not authenticated through the `header` provider with a matching `X-Guacamole-User` are vetoed, so password logins such as `guacadmin/guacadmin` no longer work. Break-glass: `SESSIONGUARD_ENFORCE_HEADER_AUTH=false`.
+- **Removing `guacadmin`:** `production/guacamole/harden-guacamole-db.sql` (idempotent) grants a real admin Guacamole administrator rights and deletes `guacadmin`. On new installations `guac-init` runs it automatically using `GUAC_ADMIN_USER`.
+- **Admin sessions are server-side:** The opaque cookie replaces the HMAC cookie. Sessions can be revoked (UI "Admin-Sessions", `/api/v1/admin/sessions`), have an absolute lifetime (`oidc.session_hours`, default 8 h) and an idle timeout (`oidc.idle_timeout_minutes`, default 60). The group check runs on every request. New OIDC back-channel logout `POST /oidc/backchannel-logout`.
+- **No internal error details to clients:** 500s and broker 503s return only a generic message plus `ref`; the details go to the server log under the same `ref`. Public endpoints (enroll/heartbeat/broker) also no longer reveal JSON parser details, and OIDC callback errors are only logged.
+- **Admin-Login fail-closed:** Ist `oidc.admin_groups` leer, wird die Liste aus den `rbac.groups`-Schlüsseln abgeleitet. Ohne Gruppen startet der Master nur mit `oidc.allow_all_authenticated_users: true`. Gleiches gilt für den lokalen Agent-Login. Lese-APIs verlangen jetzt die Permission `view`.
+- **Agent-Übernahme verhindert:** Re-Enrollment einer bekannten MachineID und eine Änderung des gemeldeten Hostnamens setzen den Server auf `maintenance`; erst nach Freigabe durch einen Admin wird er wieder gebrokert. Beides wird auditiert.
+- **CSRF:** Zentrale Prüfung für alle cookie-authentifizierten POST/PUT/PATCH/DELETE-Anfragen: gleiche Origin über `Origin`/`Sec-Fetch-Site` und `Content-Type: application/json` für `/api/`. `httpx.SameOrigin` parst die Origin jetzt strikt.
+- **Secrets:** Ein leeres, zu kurzes (< 24 Zeichen) oder als Platzhalter erkennbares (`SET-BY-…`, `CHANGE-THIS…`) `enrollment_token` bzw. `broker.api_key` verhindert den Start.
+- **Login-DoS:** Die Pending-OIDC-States sind begrenzt, und die Session-Cleanup bei Logins wird gedrosselt.
+- **Caddy:** Auf dem Guacamole-Host wird nur noch `/_sessionguard/auth/*` an den Master weitergeleitet; der Rest von `/_sessionguard/*` liefert 404. Vorher waren dort Admin-UI, Broker-API, Enrollment und `/metrics` öffentlich erreichbar.
+- **EdgeGuard:** IPv6-Clients werden nach `/64` zusammengefasst (`ipv6_prefix_length`). Statt bei voller Tabelle mit 429 abzulehnen, wird der älteste Eintrag verdrängt; Bans werden nie verdrängt. Neue Rate-Limits für `/login` und `/auth/login`. Metrik `denied_capacity_total` ersetzt durch `state_evictions_total`, `bans_dropped_total` und `tracked_clients`.
+- **Agent, Profile/Templates (LPE):** Restore, Backup und Templates arbeiten über `os.OpenRoot` und prüfen jede Pfadkomponente auf Symlinks und Junctions. Link-Ziele werden nicht überschrieben.
+- **Agent `local_guard`:** Neuer Block in `agent.json` mit `allowed_store_roots`, `allowed_template_source_roots`, `allowed_profile_roots` und `protected_users`. Die Master-Policy kann ihn nicht überschreiben. Template-Quellen aus dem Agent-Config-/Datenverzeichnis, relative Pfade und UNC-Pfade (sofern nicht freigegeben) werden immer abgelehnt.
+- **Agent-WebUI:** Nur noch `logoff`, `disconnect` und `message` sind erlaubt. `restart_server` respektiert `control_enabled`.
+- **PowerShell-Quoting:** Typografische Anführungszeichen (U+2018–U+201B) werden mit escaped.
+- **Agent:** `master_url` muss `https://` sein (Ausnahmen: localhost oder `insecure_master_url: true`).
+
+### Upgrade-Hinweise
+
+1. Master und Agents auf 0.6.0 aktualisieren und das Guacamole-Image neu bauen (`deploy/guacamole/Dockerfile.guacamole`).
+2. Nur Benutzer in einer `rbac.groups`-Gruppe (oder in `oidc.admin_groups`) können sich noch an der Master-Console anmelden. Admins vorher prüfen.
+3. Enrollment-Token und Broker-Key mindestens 24 Zeichen lang (`openssl rand -hex 32`).
+4. Template-Quellen auf SMB-Freigaben in `local_guard.allowed_template_source_roots` eintragen.
+5. Nach einer Agent-Neuinstallation (Re-Enrollment) den Server in der Master-UI wieder auf „online“ setzen.
+6. Monitoring von `denied_capacity_total` auf `state_evictions_total` umstellen.
+7. Für bestehende Datenbanken `guacadmin` entfernen (`production/guacamole/harden-guacamole-db.sql`, siehe `docs/ACCESS-AUTH.md`). In `production/sessionguard/.env` muss `GUAC_ADMIN_USER` gesetzt sein.
+8. In PocketID das Bearbeiten des eigenen Kontos durch Benutzer deaktivieren. Die Back-Channel-Logout-URLs eintragen.
+9. Nach legitimen Umbenennungen in PocketID die alte Identitätsbindung in der Master-UI freigeben.
+
+
 ## v0.5.2 Guacamole logout/recovery follow-up
 
 - Fixed an over-aggressive Guacamole browser helper which treated every Guacamole `loggedOut` state as an explicit user logout.

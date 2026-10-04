@@ -7,23 +7,39 @@
   "offline_after_seconds": 30,
   "history_limit": 50000,
   "oidc": {
-    "issuer": "https://auth.example.org",
-    "client_id": "SESSIONGUARD-POCKETID-CLIENT-ID",
+    "issuer": "https://keycloak.example.org/realms/example",
+    "client_id": "sessionguard",
     "client_secret": "SET-BY-SESSIONGUARD_OIDC_CLIENT_SECRET",
     "redirect_url": "https://sessionguard.example.org/oidc/callback",
     "logout_redirect_url": "https://sessionguard.example.org/",
+    "scopes": [
+      "openid",
+      "profile",
+      "email"
+    ],
+    "groups_claims": [
+      "groups"
+    ],
     "admin_groups": [],
     "secure_cookie": true,
     "session_hours": 8,
     "idle_timeout_minutes": 60
   },
   "access_auth": {
-    "enabled": false,
-    "issuer": "",
-    "client_id": "",
+    "enabled": true,
+    "issuer": "https://keycloak.example.org/realms/example",
+    "client_id": "guacamole-access",
     "client_secret": "SET-BY-SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET",
     "redirect_url": "https://guacamole.example.org/_sessionguard/auth/oidc/callback",
     "logout_redirect_url": "https://guacamole.example.org/",
+    "scopes": [
+      "openid",
+      "profile",
+      "email"
+    ],
+    "groups_claims": [
+      "groups"
+    ],
     "cookie_name": "sg_access_session",
     "cookie_domain": "",
     "secure_cookie": true,

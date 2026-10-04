@@ -79,18 +79,35 @@ lower this value. If a known source really needs exemption, put its address in
 `rate-exempt.txt`. Exempt sources still pass blacklist, scanner, method, host
 and global-overload checks.
 
+IPv6 clients are aggregated per prefix (`ipv6_prefix_length`, default `64`)
+because one end site usually owns at least a /64 and can rotate source
+addresses freely inside it. Per-IP buckets, endpoint buckets, offense points
+and temporary bans therefore apply to the whole /64; IPv4 (and IPv4-mapped
+IPv6) clients remain keyed per /32. Static blacklist and `rate-exempt.txt`
+entries still match the exact address/CIDR you list. Changing
+`ipv6_prefix_length` at runtime re-keys active bans and resets the per-client
+buckets.
+
 ### Endpoint-specific limits
 
-The example uses tighter limits for OIDC login/callback paths. These endpoints
+The example uses tighter limits for OIDC login/callback paths: `/_sessionguard/auth/login` and
+`/_sessionguard/auth/oidc/callback` on the Guacamole host, and `/login`,
+`/auth/login` and `/oidc/` on the SessionGuard administration host. These endpoints
 do not contain the PocketID password check itself; the limits are intended to
 protect state/session allocation and redirect processing from floods.
 
 ### Bounded per-IP memory
 
-`max_tracked_ips` bounds the in-memory table used for per-IP token buckets and
-offense state. The production example allows 100,000 active source addresses;
-when the table is full, previously unseen sources receive HTTP 429 instead of
-causing unbounded memory growth. Stale entries are cleaned up automatically.
+`max_tracked_ips` bounds the in-memory table used for per-client token buckets
+and offense state. The production example allows 100,000 active client keys
+(IPv4 /32 or IPv6 /64). When the table is full, the least-recently-seen entry
+is evicted (O(1), LRU) so new clients are still admitted; an attacker rotating
+sources cannot lock legitimate users out of the edge. Eviction only resets
+that client's buckets and offense points: temporary bans are kept in a
+separate table and are never evicted to make room. The ban table is bounded by
+the same limit; when it is full, further bans are not recorded
+(`sessionguard_edgeguard_bans_dropped_total`) while the offending requests are
+still denied. Stale entries are cleaned up automatically.
 
 ### Scanner detection and temporary bans
 
@@ -148,9 +165,24 @@ traffic but reduces log amplification once a single logger exceeds 200 entries
 per second.
 
 The public SessionGuard host denies `/metrics` and `/api/v1/broker/*` at Caddy.
+Guacamole workers call broker APIs directly over NetBird instead.
+
+On the Guacamole host only `/_sessionguard/auth/*` is forwarded to the Master
+(with `/_sessionguard` stripped, so the Master receives `/auth/login`,
+`/auth/oidc/callback`, `/auth/logout`, `/auth/backchannel-logout`,
+`/auth/status`, `/auth/verify` and `/auth/display-policy`). Every other path
+below `/_sessionguard/` returns 404, so the admin UI, `/api/v1/*` and
+`/metrics` are not reachable through the Guacamole hostname. Agent
+enrollment/heartbeat (`/api/v1/agents/*`) stays reachable only on the
+SessionGuard host, which is the documented agent `master_url`.
+
+The Guacamole host sends
+`Permissions-Policy: ... fullscreen=(self), window-management=(self)` because
+the multi-monitor helper uses the Window Management API
+(`getScreenDetails()`); the SessionGuard host keeps the stricter default.
+
 The Caddy admin API is disabled (`admin off`) on this dedicated public edge;
 configuration changes are applied by restarting the Caddy container.
-Guacamole workers call broker APIs directly over NetBird instead.
 
 ## Metrics
 
@@ -161,7 +193,11 @@ http://127.0.0.1:9081/metrics
 ```
 
 Counters include total checks, allows, static-blacklist denies, temporary-ban
-denies, rate-limit denies, scanner denies and auto-bans.
+denies, rate-limit denies, scanner denies, auto-bans, LRU state evictions
+(`sessionguard_edgeguard_state_evictions_total`), dropped bans and the current
+number of tracked clients. The former
+`sessionguard_edgeguard_denied_capacity_total` counter was removed because a
+full table no longer denies new clients.
 
 ## Configuration reload
 
