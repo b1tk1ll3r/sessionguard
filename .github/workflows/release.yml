@@ -51,7 +51,7 @@ jobs:
             target: guacamole
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # git describe needs the tags.
           fetch-depth: 0
@@ -115,7 +115,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
