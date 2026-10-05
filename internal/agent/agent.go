@@ -22,6 +22,7 @@ import (
 	"github.com/example/sessionguard/internal/model"
 	profilesync "github.com/example/sessionguard/internal/profile"
 	tpl "github.com/example/sessionguard/internal/templates"
+	"github.com/example/sessionguard/internal/webui"
 	"github.com/example/sessionguard/internal/windowsx"
 )
 
@@ -1127,6 +1128,7 @@ func (a *App) serveHTTP(ctx context.Context) error {
 		}
 		return am.Require(h)
 	}
+	webui.Register(mux)
 	mux.HandleFunc("GET /app.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store, max-age=0")
@@ -1134,6 +1136,7 @@ func (a *App) serveHTTP(ctx context.Context) error {
 	})
 	mux.Handle("GET /", secure(http.HandlerFunc(a.agentPage)))
 	mux.Handle("GET /api/v1/status", secure(http.HandlerFunc(a.statusAPI)))
+	mux.Handle("GET /api/v1/me", secure(http.HandlerFunc(a.meAPI)))
 	mux.Handle("GET /api/v1/policy", secure(http.HandlerFunc(a.policyAPI)))
 	mux.Handle("PUT /api/v1/policy", secure(http.HandlerFunc(a.policyAPI)))
 	mux.Handle("POST /api/v1/sessions/{id}/action", secure(http.HandlerFunc(a.sessionActionAPI)))

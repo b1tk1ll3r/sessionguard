@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="de" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>SessionGuard Agent</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236e8bff'/%3E%3Ctext x='16' y='21' font-family='Arial' font-size='13' font-weight='700' fill='white' text-anchor='middle'%3ESG%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/ui/sg.css?v={{VERSION}}">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Navigation">
+      <div class="brand">
+        <div class="brand-logo">SG</div>
+        <div style="min-width:0">
+          <div class="brand-name ellipsis" id="host">SessionGuard Agent</div>
+          <div class="brand-sub">Lokaler Agent · v{{VERSION}}</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="#/overview" data-route="overview"><i data-icon="grid"></i>Übersicht</a>
+        <a href="#/sessions" data-route="sessions"><i data-icon="users"></i>Sitzungen<span class="count" id="navSessions"></span></a>
+        <a href="#/operations" data-route="operations"><i data-icon="activity"></i>Betriebsdaten</a>
+        <a href="#/policy" data-route="policy"><i data-icon="sliders"></i>Lokale Policy</a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="user-chip">
+          <div class="avatar" id="userAvatar">?</div>
+          <div style="min-width:0">
+            <div class="user-name" id="userName">–</div>
+            <div class="user-roles">Lokaler Administrator</div>
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn sm" type="button" data-theme-toggle="label"></button>
+          <form action="/logout" method="post" style="display:flex">
+            <button class="btn sm" type="submit" style="flex:1"><i data-icon="logout"></i>Abmelden</button>
+          </form>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <button class="btn ghost icon menu-btn" type="button" data-nav-toggle aria-label="Menü"><i data-icon="menu"></i></button>
+        <div class="crumbs" id="crumbs"></div>
+        <div class="spacer"></div>
+        <span id="masterState"></span>
+        <span class="live" id="live" role="status"><span class="live-dot"></span><span class="live-text" id="liveText">Verbinde…</span></span>
+        <button class="btn ghost icon" type="button" id="pauseBtn" title="Live-Aktualisierung pausieren"><i data-icon="pause"></i></button>
+        <button class="btn ghost icon" type="button" id="refreshBtn" title="Jetzt aktualisieren"><i data-icon="refresh"></i></button>
+        <button class="btn ghost icon" type="button" data-theme-toggle></button>
+      </header>
+      <main class="page">
+        <div id="banner"></div>
+        <div id="view"></div>
+      </main>
+    </div>
+  </div>
+  <div class="scrim"></div>
+  <script src="/ui/sg.js?v={{VERSION}}"></script>
+  <script src="/ui/policy-editor.js?v={{VERSION}}"></script>
+  <script src="/app.js?v={{VERSION}}"></script>
+</body>
+</html>

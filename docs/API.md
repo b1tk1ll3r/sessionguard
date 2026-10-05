@@ -99,8 +99,12 @@ The Master queues an expiring command; it is not a synchronous remote Win32 call
 - `POST /api/v1/agents/{id}/policy/rollback/{revision}` – `policy`
 - `POST /api/v1/farms/{id}/policy/rollback/{revision}` – `policy`
 - `POST /api/v1/policy/global/rollback/{revision}` – `policy`
+- `GET /api/v1/policy/global` – `view`: current global default policy (`null` if unset)
+- `GET /api/v1/agents/{id}/policy/effective` – `view`: `{source, farm_name?, policy, reported_revision}`; `source` is `agent` (server override), `farm:<id>`, `global` or `none`
+- `DELETE /api/v1/agents/{id}/policy` – `policy`: remove a server override; the server inherits its farm/global policy again
+- `DELETE /api/v1/farms/{id}/policy` – `policy`: remove a farm policy
 
-Policy writes are normalized, validated, assigned a fresh revision and appended to policy history.
+Policy writes are normalized, validated, assigned a fresh revision and appended to policy history. Precedence: server override → farm policy (explicit `farm_ids` order first, then farms selecting the server via `agent_ids`/`required_tags`) → global policy. `PUT /api/v1/farms/{id}` keeps an existing farm policy when the body has no `policy`.
 
 ## Farms
 

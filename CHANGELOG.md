@@ -10,6 +10,18 @@
 - Caddy: `Permissions-Policy` auf dem Guacamole-Host erlaubt `window-management=(self)` und `fullscreen=(self)`.
 - Siehe `docs/MULTI-MONITOR.md`. Guacamole 1.6 hat kein natives RDP-Multi-Monitor; die Upstream-PRs sind noch Drafts.
 
+### Web-UI (Master & Agent)
+
+- Neu gebaut auf einem gemeinsamen Design-System (`internal/webui`: `sg.css`, `sg.js`, `policy-editor.js`). Das UI liegt jetzt als echte Dateien in `internal/master/web` und `internal/agent/web` (`go:embed`) statt als einzeilige Go-Strings; weiterhin ohne Build-Schritt und ohne npm.
+- Navigation mit eigenen Seiten und Deep-Links (`#/servers/<id>/policy`). Jede Seite lädt nur ihre Daten; Historie, Audit und Policies werden alle 30 s statt alle 5 s geladen.
+- Alle Tabellen haben Suche, sortierbare Spalten und Trefferzähler; Historie, Audit, Server und Sitzungen lassen sich als CSV exportieren (Excel-kompatibel, Schutz gegen Formel-Injection).
+- Eigene Dialoge statt Browser-`prompt`/`confirm`; destruktive Aktionen bestätigt man explizit, das Zurücksetzen der Identitäten nur durch Eingabe von `RESET`.
+- Buttons richten sich nach den Rechten des Benutzers. Live-Anzeige mit Pause und Fehler-Banner; Warnung vor dem Verlassen bei ungespeicherten Änderungen.
+- Neu: globale **Sitzungsansicht** über alle Server mit Mehrfachauswahl, **CPU/RAM-Verlauf** als Sparklines, **Farm bearbeiten** (inkl. expliziter Mitglieder), **Farm-Policy-** und **globaler Policy-Editor**, Anzeige der **Policy-Quelle** pro Server samt „Override entfernen“, Ressourcen aktivieren/deaktivieren/duplizieren, Anzeige ausstehender Befehle, Policy-Revisionen als JSON, Schnellwahl für den Broker-Modus.
+- Agent-UI: Übersicht mit Master-Verbindung und Health-Checks, Sitzungen mit Suche/Filter, die lokale Policy als eigene Seite statt als Modal.
+- API: `GET /api/v1/policy/global`, `GET /api/v1/agents/{id}/policy/effective`, `DELETE /api/v1/agents/{id}/policy`, `DELETE /api/v1/farms/{id}/policy`, Agent `GET /api/v1/me`.
+- Fix: `PUT /api/v1/farms/{id}` ohne `policy`-Feld hat eine vorhandene Farm-Policy stillschweigend gelöscht.
+
 ### GitHub Actions
 
 - New workflows in `.github/workflows/`: `ci.yml` (gofmt, vet, tests on Linux + Windows, Maven, JS syntax), `release.yml` (images to GHCR with provenance/SBOM, extension JAR as artifact or release asset) and `windows-agent-release.yml` (GitHub Release via `gh`). Releases only run after green CI.

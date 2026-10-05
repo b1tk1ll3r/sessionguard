@@ -21,6 +21,7 @@ import (
 	"github.com/example/sessionguard/internal/config"
 	"github.com/example/sessionguard/internal/httpx"
 	"github.com/example/sessionguard/internal/model"
+	"github.com/example/sessionguard/internal/webui"
 )
 
 const Version = "0.6.0"
@@ -66,6 +67,7 @@ func (a *App) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/v1/agents/heartbeat", a.heartbeat)
 	mux.HandleFunc("POST /api/v1/broker/resolve", a.brokerResolve)
 	mux.HandleFunc("POST /api/v1/broker/tokens", a.brokerTokens)
+	webui.Register(mux)
 	mux.HandleFunc("GET /app.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store, max-age=0")
@@ -78,6 +80,10 @@ func (a *App) Run(ctx context.Context) error {
 	mux.Handle("PUT /api/v1/agents/{id}/policy", a.auth.Require(a.require("policy", http.HandlerFunc(a.policy))))
 	mux.Handle("POST /api/v1/agents/{id}/policy/rollback/{revision}", a.auth.Require(a.require("policy", http.HandlerFunc(a.policyRollback))))
 	mux.Handle("PUT /api/v1/policy/all", a.auth.Require(a.require("policy", http.HandlerFunc(a.policyAll))))
+	mux.Handle("GET /api/v1/policy/global", a.auth.Require(a.require("view", http.HandlerFunc(a.globalPolicy))))
+	mux.Handle("GET /api/v1/agents/{id}/policy/effective", a.auth.Require(a.require("view", http.HandlerFunc(a.effectivePolicy))))
+	mux.Handle("DELETE /api/v1/agents/{id}/policy", a.auth.Require(a.require("policy", http.HandlerFunc(a.agentPolicyClear))))
+	mux.Handle("DELETE /api/v1/farms/{id}/policy", a.auth.Require(a.require("policy", http.HandlerFunc(a.farmPolicyClear))))
 	mux.Handle("POST /api/v1/policy/global/rollback/{revision}", a.auth.Require(a.require("policy", http.HandlerFunc(a.globalPolicyRollback))))
 	mux.Handle("PUT /api/v1/farms/{id}/policy", a.auth.Require(a.require("policy", http.HandlerFunc(a.farmPolicy))))
 	mux.Handle("POST /api/v1/farms/{id}/policy/rollback/{revision}", a.auth.Require(a.require("policy", http.HandlerFunc(a.farmPolicyRollback))))
@@ -310,8 +316,15 @@ func (a *App) recordSessionHistoryLocked(rec model.AgentRecord, old, new model.A
 }
 
 func (a *App) effectivePolicyLocked(rec model.AgentRecord) *model.Policy {
+	_, p := a.effectivePolicySourceLocked(rec)
+	return p
+}
+
+// effectivePolicySourceLocked returns the policy an agent receives and where it
+// comes from: "agent" (server override), "farm:<id>", "global" or "none".
+func (a *App) effectivePolicySourceLocked(rec model.AgentRecord) (string, *model.Policy) {
 	if rec.DesiredPolicy != nil {
-		return rec.DesiredPolicy
+		return "agent", rec.DesiredPolicy
 	}
 
 	// Explicit per-agent farm assignments have precedence and keep their
@@ -319,7 +332,7 @@ func (a *App) effectivePolicyLocked(rec model.AgentRecord) *model.Policy {
 	// intentionally belongs to multiple farms.
 	for _, fid := range rec.FarmIDs {
 		if f, ok := a.store.data.Farms[fid]; ok && f.Enabled && f.Policy != nil {
-			return f.Policy
+			return "farm:" + fid, f.Policy
 		}
 	}
 
@@ -337,10 +350,13 @@ func (a *App) effectivePolicyLocked(rec model.AgentRecord) *model.Policy {
 			continue
 		}
 		if contains(f.AgentIDs, rec.ID) || (len(f.RequiredTags) > 0 && tagsMatch(rec.Tags, f.RequiredTags)) {
-			return f.Policy
+			return "farm:" + fid, f.Policy
 		}
 	}
-	return a.store.data.GlobalPolicy
+	if a.store.data.GlobalPolicy != nil {
+		return "global", a.store.data.GlobalPolicy
+	}
+	return "none", nil
 }
 
 func (a *App) brokerResolve(w http.ResponseWriter, r *http.Request) {
@@ -1116,10 +1132,15 @@ func (a *App) saveFarm(w http.ResponseWriter, r *http.Request, f model.Farm, mus
 	}
 	a.store.mu.Lock()
 	defer a.store.mu.Unlock()
-	_, exists := a.store.data.Farms[f.ID]
+	old, exists := a.store.data.Farms[f.ID]
 	if mustExist && !exists {
 		httpx.Error(w, 404, "farm not found")
 		return
+	}
+	// Farm policies are managed via PUT/DELETE /api/v1/farms/{id}/policy (with
+	// version history). An update without a policy must not silently drop it.
+	if exists && f.Policy == nil {
+		f.Policy = old.Policy
 	}
 	a.store.data.Farms[f.ID] = f
 	a.store.appendAuditLocked(model.AuditEntry{Time: time.Now().UTC(), Actor: requestActor(r), Action: "farm_save", Target: f.Name, Result: "success"})

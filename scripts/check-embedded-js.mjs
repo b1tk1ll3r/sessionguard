@@ -1,27 +1,33 @@
-// Syntax-checks the JavaScript embedded as Go raw strings in the Master and
-// Agent web UIs (there is no frontend build step that would catch errors).
-import { readFileSync } from "node:fs";
+// Syntax-checks the browser JavaScript embedded into the Go binaries (there is
+// no frontend build step that would catch errors): Master/Agent consoles,
+// the shared UI library and the Guacamole extension helpers.
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
-const targets = [
-  ["internal/master/ui.go", "masterJS"],
-  ["internal/agent/ui.go", "agentJS"],
+const dirs = [
+  "internal/master/web",
+  "internal/agent/web",
+  "internal/webui/assets",
+  "guacamole-extension/src/main/resources/js",
 ];
 
 let failed = false;
-for (const [file, name] of targets) {
-  const src = readFileSync(file, "utf8");
-  const match = src.match(new RegExp("const " + name + " = `([\\s\\S]*?)`"));
-  if (!match) {
-    console.error(`${file}: const ${name} not found`);
-    failed = true;
-    continue;
+let checked = 0;
+for (const dir of dirs) {
+  for (const name of readdirSync(dir).filter((f) => f.endsWith(".js"))) {
+    const file = join(dir, name);
+    try {
+      new Function(readFileSync(file, "utf8"));
+      checked++;
+      console.log(`${file}: ok`);
+    } catch (err) {
+      console.error(`${file}: ${err.message}`);
+      failed = true;
+    }
   }
-  try {
-    new Function(match[1]);
-    console.log(`${file}: ${name} ok`);
-  } catch (err) {
-    console.error(`${file}: ${name}: ${err.message}`);
-    failed = true;
-  }
+}
+if (checked === 0) {
+  console.error("no JavaScript files found");
+  failed = true;
 }
 process.exit(failed ? 1 : 0);
