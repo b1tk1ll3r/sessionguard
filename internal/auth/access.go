@@ -282,6 +282,12 @@ func (m *AccessManager) Verify(w http.ResponseWriter, r *http.Request) {
 	if len(sess.Groups) > 0 {
 		w.Header().Set("X-SessionGuard-Groups", strings.Join(sess.Groups, ","))
 	}
+	// Always emitted when group sync is enabled (even empty) so the proxy
+	// overwrites any client-supplied value. Guacamole applies the permissions
+	// of user groups with these names.
+	if m.cfg.GuacamoleGroups.Enabled {
+		w.Header().Set(GuacamoleGroupsHeader, EncodeGuacamoleGroups(GuacamoleGroups(sess.Groups, m.cfg.GuacamoleGroups)))
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 }
@@ -298,6 +304,7 @@ func (m *AccessManager) Status(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"authenticated": true, "username": sess.Username, "email": sess.Email,
 		"groups": sess.Groups, "expires_at": sess.ExpiresAt,
+		"guacamole_groups": GuacamoleGroups(sess.Groups, m.cfg.GuacamoleGroups),
 	})
 }
 

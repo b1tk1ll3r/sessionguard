@@ -13,6 +13,10 @@ services:
       SESSIONGUARD_MASTER_URL: http://sessionguard-master:8080
       SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY}
       SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
+      # OIDC group sync (docs/ACCESS-AUTH.md); requires the ForwardAuth proxy
+      # to strip/copy X-Guacamole-User and X-Guacamole-Groups.
+      SESSIONGUARD_HEADER_LOGIN: "true"
+      EXTENSION_PRIORITY: sessionguard-broker
     networks:
       - aio_proxy
       - sessionguard_control

@@ -74,6 +74,7 @@
             request_header -X-SessionGuard-User
             request_header -X-SessionGuard-Email
             request_header -X-SessionGuard-Groups
+            request_header -X-Guacamole-Groups
             request_header -X-Forwarded-User
             request_header -X-Authenticated-User
             reverse_proxy {$SESSIONGUARD_IP}:8080
@@ -90,6 +91,7 @@
                 request_header -X-SessionGuard-User
                 request_header -X-SessionGuard-Email
                 request_header -X-SessionGuard-Groups
+                request_header -X-Guacamole-Groups
                 request_header -X-Forwarded-User
                 request_header -X-Authenticated-User
 
@@ -101,6 +103,7 @@
                         X-SessionGuard-User
                         X-SessionGuard-Email
                         X-SessionGuard-Groups
+                        X-Guacamole-Groups
                     }
                 }
 

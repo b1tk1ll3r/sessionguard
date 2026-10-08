@@ -100,9 +100,10 @@ labels:
   - traefik.http.middlewares.guac-id-scrub.headers.customrequestheaders.X-SessionGuard-User=
   - traefik.http.middlewares.guac-id-scrub.headers.customrequestheaders.X-SessionGuard-Email=
   - traefik.http.middlewares.guac-id-scrub.headers.customrequestheaders.X-SessionGuard-Groups=
+  - traefik.http.middlewares.guac-id-scrub.headers.customrequestheaders.X-Guacamole-Groups=
 
   - traefik.http.middlewares.guac-sg-auth.forwardauth.address=http://sessionguard-master:8080/auth/verify
-  - traefik.http.middlewares.guac-sg-auth.forwardauth.authResponseHeaders=X-Guacamole-User,X-SessionGuard-User,X-SessionGuard-Email,X-SessionGuard-Groups
+  - traefik.http.middlewares.guac-sg-auth.forwardauth.authResponseHeaders=X-Guacamole-User,X-SessionGuard-User,X-SessionGuard-Email,X-SessionGuard-Groups,X-Guacamole-Groups
 
   # Add these to the existing Guacamole middleware chain, in this order.
   - traefik.http.routers.guacamole.middlewares=guac-id-scrub,guac-sg-auth
@@ -185,3 +186,56 @@ Director/admin logins are server-side sessions (opaque cookie, only the SHA-256 
 - Group membership is re-checked against `admin_groups` on every request.
 - Logout, the *Admin sessions* panel (`GET/DELETE /api/v1/admin/sessions`) and Pocket ID back-channel logout end a session immediately.
 - A Master restart ends all admin sessions; users simply log in again through Pocket ID SSO.
+
+## OIDC groups → Guacamole groups (v0.6)
+
+Guacamole permissions are typically assigned to Guacamole **user groups**. With group sync, membership no longer has to be maintained in Guacamole: a user who is in OIDC group `sage-users` automatically gets the permissions of the Guacamole user group `sage-users` (exact name, case-sensitive by default).
+
+How it works:
+
+1. At login, the access session stores the OIDC groups (`groups_claims`, e.g. `groups` or `realm_access.roles`).
+2. ForwardAuth (`/auth/verify`) emits `X-Guacamole-Groups`: the groups after mapping (below), percent-encoded and comma-separated (umlauts and commas survive).
+3. With `SESSIONGUARD_HEADER_LOGIN=true` the SessionGuard Guacamole extension authenticates the user from `X-Guacamole-User` (like `guacamole-auth-header`) and reports these groups as *effective user groups*.
+4. The Guacamole JDBC extension matches effective groups by name against its user groups and applies their connection and system permissions. Groups that do not exist in Guacamole are ignored.
+
+### Master configuration
+
+```json
+"access_auth": {
+  "guacamole_groups": {
+    "enabled": true,
+    "prefix": "guac-",
+    "strip_prefix": true,
+    "map": { "/IT/RDS-Admins": "RDS Admins" },
+    "exclude": ["guac-legacy"]
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `enabled` | Emit `X-Guacamole-Groups` (always, even if empty, so a forged client value is overwritten). |
+| `prefix` | Only pass groups starting with this prefix (case-insensitive). Empty = all groups. Recommended, e.g. `guac-`, so that only groups intended for Guacamole are considered. |
+| `strip_prefix` | `guac-sage-users` → Guacamole group `sage-users`. |
+| `map` | Explicit renames OIDC → Guacamole; mapped groups bypass `prefix`. |
+| `exclude` | Never pass these groups. |
+
+A leading `/` (Keycloak "Full group path") is always removed. The resulting groups per user are visible in the Master console under *Access-Sessions → Guacamole-Gruppen* and for the user at `/_sessionguard/auth/status`.
+
+### Guacamole configuration
+
+```yaml
+SESSIONGUARD_HEADER_LOGIN: "true"          # extension authenticates from the trusted headers
+EXTENSION_PRIORITY: sessionguard-broker   # must run before guacamole-auth-header (which knows no groups)
+HTTP_AUTH_ENABLED: "true"                 # may stay as fallback
+POSTGRESQL_AUTO_CREATE_ACCOUNTS: "true"
+```
+
+Create the user groups in Guacamole (*Settings → Groups*) with exactly the mapped names and assign connections/permissions to the groups. Manual memberships are no longer needed; existing manual memberships keep working in addition.
+
+### Security notes
+
+- `X-Guacamole-Groups` grants permissions. The reverse proxy **must** strip it from client requests and copy it only from the ForwardAuth response (the supplied Caddyfiles and the Traefik labels above do this). Never enable `SESSIONGUARD_HEADER_LOGIN` on a Guacamole instance that is reachable without this proxy.
+- Whoever controls an IdP group controls the Guacamole permissions of the matching Guacamole group, including `ADMINISTER` if that group has it. Use `prefix` so unrelated IdP groups cannot collide with Guacamole group names.
+- Groups are taken from the ID token at the SessionGuard login and stay fixed for the access session (`session_hours`). After a group change in the IdP, revoke the user's access session in the Master console (or wait for its expiry); the next login carries the new groups. Removing a user from a group therefore does not take effect instantly unless the session is revoked.
+- If the SessionGuard identity of a browser changes while Guacamole still holds a token of the previous user, the extension invalidates that Guacamole session instead of continuing as the old user.

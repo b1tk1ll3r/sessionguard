@@ -35,7 +35,14 @@
     "allowed_groups": [],
     "allowed_hosts": [
       "ts.hilden.info"
-    ]
+    ],
+    "guacamole_groups": {
+      "enabled": true,
+      "prefix": "",
+      "strip_prefix": false,
+      "map": {},
+      "exclude": []
+    }
   },
 
   "rbac": {

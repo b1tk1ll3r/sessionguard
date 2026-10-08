@@ -1629,10 +1629,16 @@
           rows: (S.access || {}).sessions || [],
           empty: "Keine aktiven Guacamole Access-Sessions.",
           emptyIcon: "shield",
-          search: (x) => [x.username, x.name, x.email, (x.groups || []).join(" ")].join(" "),
+          search: (x) => [x.username, x.name, x.email, (x.groups || []).join(" "), (x.guacamole_groups || []).join(" ")].join(" "),
           columns: [
             { key: "username", label: "Benutzer", html: (x) => "<strong>" + esc(x.username || "–") + "</strong>" + (x.name || x.email ? '<div class="small muted">' + esc([x.name, x.email].filter(Boolean).join(" · ")) + "</div>" : "") },
-            { key: "groups", label: "Gruppen", html: (x) => (x.groups || []).map((g) => SG.badge(g)).join(" ") || "–", value: (x) => (x.groups || []).join(",") },
+            { key: "groups", label: "OIDC-Gruppen", html: (x) => (x.groups || []).map((g) => SG.badge(g)).join(" ") || "–", value: (x) => (x.groups || []).join(",") },
+            {
+              key: "guac_groups",
+              label: "Guacamole-Gruppen",
+              html: (x) => (x.guacamole_groups || []).map((g) => SG.badge(g, "info")).join(" ") || '<span class="small muted">keine</span>',
+              value: (x) => (x.guacamole_groups || []).join(","),
+            },
             { key: "created_at", label: "Angemeldet", html: (x) => SG.time(x.created_at) },
             { key: "expires_at", label: "Läuft ab", html: (x) => SG.time(x.expires_at) },
             { key: "act", label: "", cls: "actions", sort: false, html: (x) => '<button class="btn sm danger" data-acc="revoke-access" data-id="' + esc(x.id) + '" data-user="' + esc(x.username || "") + '">' + icon("x") + "Widerrufen</button>" },

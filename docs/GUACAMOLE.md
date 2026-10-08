@@ -38,7 +38,12 @@ SESSIONGUARD_ENFORCE_HEADER_AUTH: "true"
 # Defaults to HTTP_AUTH_HEADER, then X-Guacamole-User.
 SESSIONGUARD_IDENTITY_HEADER: X-Guacamole-User
 # Comma-separated auth provider identifiers allowed to authenticate users.
-SESSIONGUARD_ALLOWED_AUTH_PROVIDERS: header
+SESSIONGUARD_ALLOWED_AUTH_PROVIDERS: header,sessionguard-broker
+# OIDC group sync (see docs/ACCESS-AUTH.md): authenticate from the trusted
+# headers and pass X-Guacamole-Groups as effective Guacamole user groups.
+SESSIONGUARD_HEADER_LOGIN: "true"
+SESSIONGUARD_GROUPS_HEADER: X-Guacamole-Groups
+EXTENSION_PRIORITY: sessionguard-broker
 ```
 
 Use the same broker API key configured on the SessionGuard Master. The URL should preferably be an internal network URL, not the public Internet endpoint.

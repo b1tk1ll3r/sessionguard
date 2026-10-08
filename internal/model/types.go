@@ -55,6 +55,24 @@ type AccessAuthConfig struct {
 	// accepted username characters (default ASCII letters, digits, ._@-).
 	ReservedUsernames []string `json:"reserved_usernames,omitempty"`
 	UsernamePattern   string   `json:"username_pattern,omitempty"`
+	// GuacamoleGroups passes OIDC groups to Guacamole (X-Guacamole-Groups),
+	// where they are matched by name against Guacamole user groups.
+	GuacamoleGroups GuacamoleGroupMapping `json:"guacamole_groups"`
+}
+
+// GuacamoleGroupMapping selects and renames OIDC groups for Guacamole.
+// A leading "/" (Keycloak full group path) is always removed first.
+type GuacamoleGroupMapping struct {
+	Enabled bool `json:"enabled"`
+	// Prefix limits the passed groups to those starting with it (case-
+	// insensitive), e.g. "guac-". StripPrefix removes it from the name.
+	Prefix      string `json:"prefix,omitempty"`
+	StripPrefix bool   `json:"strip_prefix,omitempty"`
+	// Map renames OIDC groups explicitly (OIDC name -> Guacamole name).
+	// Mapped groups are passed even if they do not match Prefix.
+	Map map[string]string `json:"map,omitempty"`
+	// Exclude never passes these OIDC groups (after "/" removal).
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 // IdentityBinding pins a Guacamole username to the immutable OIDC subject

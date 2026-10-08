@@ -50,7 +50,14 @@
     "allowed_groups": [],
     "allowed_hosts": [
       "guacamole.example.org"
-    ]
+    ],
+    "guacamole_groups": {
+      "enabled": true,
+      "prefix": "guac-",
+      "strip_prefix": true,
+      "map": {},
+      "exclude": []
+    }
   },
   "rbac": {
     "default_role": "viewer",

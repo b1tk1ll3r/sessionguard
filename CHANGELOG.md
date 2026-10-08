@@ -10,6 +10,14 @@
 - Caddy: `Permissions-Policy` auf dem Guacamole-Host erlaubt `window-management=(self)` und `fullscreen=(self)`.
 - Siehe `docs/MULTI-MONITOR.md`. Guacamole 1.6 hat kein natives RDP-Multi-Monitor; die Upstream-PRs sind noch Drafts.
 
+### OIDC-Gruppen → Guacamole-Gruppen
+
+- Neu: `access_auth.guacamole_groups`. Der Master übergibt die OIDC-Gruppen eines Benutzers per ForwardAuth als `X-Guacamole-Groups` (percent-encoded; mit optionalem Präfix-Filter, Präfix-Entfernung, Umbenennung und Ausschlüssen; ein führendes `/` aus Keycloak-Gruppenpfaden wird entfernt).
+- Die Guacamole-Extension authentifiziert mit `SESSIONGUARD_HEADER_LOGIN=true` selbst über die vertrauenswürdigen Header und meldet diese Gruppen als effektive Benutzergruppen. Guacamole wendet damit die Rechte gleichnamiger Benutzergruppen automatisch an; manuelle Mitgliedschaften sind nicht mehr nötig. Voraussetzung: `EXTENSION_PRIORITY=sessionguard-broker`.
+- Wechselt die SessionGuard-Identität im Browser, während Guacamole noch ein Token des vorherigen Benutzers hält, wird die Guacamole-Sitzung ungültig gemacht.
+- Die Caddyfiles entfernen bzw. kopieren `X-Guacamole-Groups`; die Traefik-Labels in `docs/ACCESS-AUTH.md` sind ergänzt.
+- Die Master-UI zeigt je Access-Session die resultierenden Guacamole-Gruppen.
+
 ### Web-UI (Master & Agent)
 
 - Neu gebaut auf einem gemeinsamen Design-System (`internal/webui`: `sg.css`, `sg.js`, `policy-editor.js`). Das UI liegt jetzt als echte Dateien in `internal/master/web` und `internal/agent/web` (`go:embed`) statt als einzeilige Go-Strings; weiterhin ohne Build-Schritt und ohne npm.

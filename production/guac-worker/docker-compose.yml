@@ -64,6 +64,14 @@ services:
       HTTP_AUTH_ENABLED: "true"
       HTTP_AUTH_HEADER: X-Guacamole-User
       REMOTE_IP_VALVE_ENABLED: "true"
+
+      # OIDC group sync: the SessionGuard extension authenticates from the
+      # same trusted headers and additionally passes X-Guacamole-Groups as
+      # effective user groups. Guacamole applies the permissions of user
+      # groups with matching names (no manual membership needed). It must run
+      # before guacamole-auth-header, which knows no groups.
+      SESSIONGUARD_HEADER_LOGIN: "true"
+      EXTENSION_PRIORITY: sessionguard-broker
     networks:
       guac_internal:
         ipv4_address: ${GUAC_APP_IP}

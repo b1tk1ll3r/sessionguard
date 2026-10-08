@@ -1339,15 +1339,18 @@ func (a *App) alerts(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) accessSessions(w http.ResponseWriter, r *http.Request) {
 	type publicSession struct {
-		ID        string    `json:"id"`
-		Subject   string    `json:"subject"`
-		SID       string    `json:"sid,omitempty"`
-		Username  string    `json:"username"`
-		Email     string    `json:"email,omitempty"`
-		Name      string    `json:"name,omitempty"`
-		Groups    []string  `json:"groups,omitempty"`
-		CreatedAt time.Time `json:"created_at"`
-		ExpiresAt time.Time `json:"expires_at"`
+		ID       string   `json:"id"`
+		Subject  string   `json:"subject"`
+		SID      string   `json:"sid,omitempty"`
+		Username string   `json:"username"`
+		Email    string   `json:"email,omitempty"`
+		Name     string   `json:"name,omitempty"`
+		Groups   []string `json:"groups,omitempty"`
+		// GuacamoleGroups are the effective Guacamole user groups derived
+		// from Groups via access_auth.guacamole_groups.
+		GuacamoleGroups []string  `json:"guacamole_groups,omitempty"`
+		CreatedAt       time.Time `json:"created_at"`
+		ExpiresAt       time.Time `json:"expires_at"`
 	}
 	now := time.Now().UTC()
 	a.store.mu.RLock()
@@ -1356,7 +1359,7 @@ func (a *App) accessSessions(w http.ResponseWriter, r *http.Request) {
 		if !sess.ExpiresAt.IsZero() && !now.Before(sess.ExpiresAt) {
 			continue
 		}
-		out = append(out, publicSession{ID: sess.ID, Subject: sess.Subject, SID: sess.SID, Username: sess.Username, Email: sess.Email, Name: sess.Name, Groups: append([]string(nil), sess.Groups...), CreatedAt: sess.CreatedAt, ExpiresAt: sess.ExpiresAt})
+		out = append(out, publicSession{ID: sess.ID, Subject: sess.Subject, SID: sess.SID, Username: sess.Username, Email: sess.Email, Name: sess.Name, Groups: append([]string(nil), sess.Groups...), GuacamoleGroups: auth.GuacamoleGroups(sess.Groups, a.cfg.AccessAuth.GuacamoleGroups), CreatedAt: sess.CreatedAt, ExpiresAt: sess.ExpiresAt})
 	}
 	a.store.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
