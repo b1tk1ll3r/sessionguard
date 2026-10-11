@@ -146,7 +146,7 @@ jobs:
           echo "sha256=$(cut -d' ' -f1 dist/guacamole-extension/sessionguard-guacamole.jar.sha256)" >> "$GITHUB_OUTPUT"
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sessionguard-guacamole-extension
           path: dist/guacamole-extension/
