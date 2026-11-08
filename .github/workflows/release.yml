@@ -88,7 +88,7 @@ jobs:
             type=sha
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.file }}
@@ -124,7 +124,7 @@ jobs:
 
       # Exactly the JAR that is embedded into the Guacamole image.
       - name: Build extension
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./deploy/guacamole/Dockerfile.guacamole
