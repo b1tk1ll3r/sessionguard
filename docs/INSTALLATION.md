@@ -1,50 +1,36 @@
-# SessionGuard v0.3 – Installation und Konfiguration
+# SessionGuard – Installation und Konfiguration
 
-> Schritt-für-Schritt-Anleitung für den Betrieb von SessionGuard als RDS-Control-Plane zusammen mit Apache Guacamole 1.6, PocketID, Traefik, PostgreSQL und Windows Remote Desktop Session Hosts.
+> Schritt-für-Schritt-Anleitung für den Betrieb von SessionGuard als RDS-Control-Plane mit Apache Guacamole 1.6, PostgreSQL und Windows Remote Desktop Session Hosts. Referenz-Deployment: **Caddy Sentinel** auf dem Host (Reverse-Proxy und OIDC-Provider mit AD-/LDAP-Anmeldung), der SessionGuard-Stack in Docker.
 
-Diese Anleitung ist auf den aktuellen SessionGuard-v0.3-Arbeitsstand und die vorhandene Umgebung mit `git.send.nrw`, `ts.hilden.info`, `guacauth.hilden.info` und `auth.hilden.info` zugeschnitten. Alle Secrets sind Platzhalter und müssen durch eigene, zufällige Werte ersetzt werden.
+Alle Hostnamen (`sso.example.org`, `sessionguard.example.org`, `rds.example.org`) und Secrets sind Platzhalter.
 
 ---
 
 ## 1. Zielbild
 
-Nach der Installation sieht die Umgebung logisch so aus:
-
 ```text
-Internet
+Internet / LAN
    |
    v
-Traefik
-   |
-   +----------------------+-----------------------+
-   |                      |                       |
-   v                      v                       v
-Guacamole             PocketID              SessionGuard Master
-+ SessionGuard            |                       |
-Extension                 |                       +---- PostgreSQL
-   |                      |                       |
-   +----------------------+                       |
-   |                                              |
-   | Broker API                                   | Agent Heartbeats
-   v                                              v
-SessionGuard Master <---------------------- Windows RDS Agents
-   |                                              |
-   | Brokerentscheidung                           +-- RDS01
-   |                                              +-- RDS02
-   +----------------------------------------------+-- RDS03
+Caddy Sentinel (Host): TLS, WAF/IDS, Ratelimits, OIDC-Server ── AD/LDAP
+   |  sso.example.org            → Anmeldung (Domänenkonten + 2. Faktor)
+   |  sessionguard.example.org   → 127.0.0.1:8080 SessionGuard Master
+   |  rds.example.org            → forward_auth → 127.0.0.1:8081 Guacamole
+   v
+Docker (deploy/docker-compose.yml)
+   Guacamole + SessionGuard-Extension ── guacd ──RDP──► RDS01..RDSn
+   SessionGuard Master ── PostgreSQL          ▲
+   Guacamole-PostgreSQL                       │ Agent-Heartbeats
+                                              └── https://sessionguard.example.org
 ```
-
-Die Verantwortlichkeiten bleiben bewusst getrennt:
 
 | Komponente | Aufgabe |
 |---|---|
-| PocketID | Benutzeridentität und OIDC-Gruppen |
-| Traefik / traefik-forward-auth | TLS, Edge-Proxy und Guacamole-Header-Authentifizierung |
-| Guacamole | HTML5/RDP-Gateway |
-| SessionGuard Guacamole Extension | fragt beim Verbindungsaufbau den Broker nach dem Ziel-RDS-Host |
-| SessionGuard Master | Broker, Director, Farms, Policies, RBAC, Alerts, Audit, Session-Historie |
+| Caddy Sentinel | TLS, Reverse-Proxy, WAF/IDS, OIDC-Server; meldet Benutzer mit AD-Konten an |
+| SessionGuard Master | Broker, Director, Farms, Policies, RBAC, Alerts, Audit, ForwardAuth für Guacamole |
+| Guacamole + SessionGuard Extension | HTML5/RDP-Gateway; fragt beim Verbindungsaufbau den Broker nach dem Ziel-Host |
 | SessionGuard Agent | lokale RDS-/WTS-Steuerung, Profil-Pipeline, Templates und Telemetrie |
-| PostgreSQL | persistenter SessionGuard-Control-Plane- und Director-State |
+| PostgreSQL | persistenter State von SessionGuard bzw. Guacamole |
 | Windows RDS | eigentliche Benutzer-Sitzungen |
 
 ---
@@ -53,710 +39,136 @@ Die Verantwortlichkeiten bleiben bewusst getrennt:
 
 ## 2. Voraussetzungen prüfen
 
-### 2.1 Docker-/Linux-Seite
+### 2.1 Linux-Host
 
-Benötigt werden:
-
-- Docker Engine
-- Docker Compose v2
-- bestehender Traefik v3
-- Zugriff auf `git.send.nrw`
-- DNS für Guacamole, PocketID und SessionGuard
-- PostgreSQL 17 wird empfohlen
-
-Vorhanden sind bereits:
-
-```text
-Guacamole:       https://ts.hilden.info
-Forward Auth:    https://guacauth.hilden.info
-PocketID:        https://auth.hilden.info
-```
-
-Für SessionGuard wird in dieser Anleitung beispielhaft verwendet:
-
-```text
-SessionGuard:    https://sessionguard.hilden.info
-```
-
-Dafür einen DNS-Eintrag auf denselben Traefik-Endpunkt erstellen.
+- Caddy Sentinel installiert (systemd), mit Active Directory verbunden (*Site-Login & Konten › Verzeichnis (AD)*)
+- Docker Engine mit Compose-Plugin
+- DNS: `sso.example.org`, `sessionguard.example.org`, `rds.example.org` zeigen auf den Host
+- Netzwerkweg vom Host zu den RDS-Hosts (TCP 3389) für guacd
 
 ### 2.2 Windows-Seite
 
-Pro RDS-Host:
+- Windows Server 2019/2022/2025 mit RD Session Host
+- Weg zu `https://sessionguard.example.org` (Agent-Heartbeats)
+- für SMB-Profilspeicher: gMSA mit Share-/NTFS-Rechten
 
-- Windows Server 2019/2022/2025 x64
-- RDS Session Host installiert und funktionsfähig
-- lokaler Administrator für die Installation
-- Netzwerkzugriff zum SessionGuard Master
-- bei Profil-Sicherung: Zugriff auf den gewünschten SMB-Store
-- empfohlen: gMSA für den SessionGuard-Dienst, wenn auf SMB-Shares geschrieben werden soll
+### 2.3 Build-Voraussetzungen (nur für eigene Builds)
 
-### 2.3 Build-Voraussetzungen
-
-Falls der Windows-Agent lokal gebaut wird:
-
-```text
-Go 1.23+
-PowerShell 5.1+
-Git
-```
-
-Für einen lokalen Build der Guacamole-Extension:
-
-```text
-JDK 17
-Maven 3.9+
-```
-
-Im normalen Gitea-CI/CD-Betrieb wird die Guacamole-Extension bereits im Docker-Build erstellt.
+- Go 1.26+, JDK 11+ und Maven für die Guacamole-Extension
+- sonst die Images aus GHCR verwenden (`deploy/guacamole/CI-CD.md`)
 
 ---
 
-# Teil B – Secrets und PocketID
+# Teil B – Secrets
 
 ## 3. SessionGuard-Secrets erzeugen
 
-Für unterschiedliche Vertrauensbeziehungen **unterschiedliche Secrets** verwenden.
+Jedes Secret einzeln erzeugen (`openssl rand -hex 32`):
 
-Beispiel unter Linux:
-
-```bash
-openssl rand -base64 48
-openssl rand -base64 48
-openssl rand -base64 48
-openssl rand -base64 48
-```
-
-Benötigt werden mindestens:
-
-```text
-SESSIONGUARD_DB_PASSWORD
-SESSIONGUARD_ENROLLMENT_TOKEN
-SESSIONGUARD_BROKER_API_KEY
-SESSIONGUARD_OIDC_CLIENT_SECRET
-```
-
-Die Secrets dürfen nicht wiederverwendet werden.
-
-Insbesondere sind diese Werte voneinander zu trennen:
-
-```text
-PocketID OIDC Client Secret       Browser -> SessionGuard
-Broker API Key                    Guacamole Extension -> Master
-Enrollment Token                  neuer Agent -> Master
-Per-Agent Token                   Agent -> Master, wird automatisch erzeugt
-PostgreSQL Password               Master -> PostgreSQL
-```
-
----
-
-## 4. PocketID für den SessionGuard Master konfigurieren
-
-In PocketID einen **neuen vertraulichen OIDC-Client nur für SessionGuard** anlegen.
-
-Beispiel:
-
-```text
-Name:          SessionGuard Master
-Client Type:   Confidential
-```
-
-Redirect URI:
-
-```text
-https://sessionguard.hilden.info/oidc/callback
-```
-
-Scopes:
-
-```text
-openid profile email groups
-```
-
-Client-ID und Client-Secret notieren.
-
-Das Client-Secret später ausschließlich über:
-
-```text
-SESSIONGUARD_OIDC_CLIENT_SECRET
-```
-
-an den Master übergeben.
-
-### 4.1 Empfohlene PocketID-Gruppen
-
-Beispielsweise:
-
-```text
-sessionguard-admins
-sessionguard-helpdesk
-sessionguard-operators
-sessionguard-policy
-sessionguard-profile
-sessionguard-auditors
-```
-
-Empfohlene SessionGuard-Zuordnung:
-
-| PocketID-Gruppe | SessionGuard-Rolle |
+| Secret | Weg |
 |---|---|
-| `sessionguard-admins` | `admin` |
-| `sessionguard-helpdesk` | `helpdesk` |
-| `sessionguard-operators` | `operator` |
-| `sessionguard-policy` | `policy_admin` |
-| `sessionguard-profile` | `profile_admin` |
-| `sessionguard-auditors` | `auditor` |
-
-Für Produktion sollte `rbac.groups` nicht leer bleiben. Ein leeres Mapping vergibt aus Kompatibilitätsgründen weitreichendere Rechte als für einen finalen Produktionsbetrieb gewünscht.
+| `SESSIONGUARD_ENROLLMENT_TOKEN` | Agent → Master (Erstregistrierung) |
+| `SESSIONGUARD_BROKER_API_KEY` | Guacamole-Extension → Master |
+| `SESSIONGUARD_PROXY_SECRET` | Caddy → Guacamole-Extension (vertrauenswürdige Identitäts-Header) |
+| `SESSIONGUARD_DB_PASSWORD`, `GUAC_DB_PASSWORD` | Datenbanken |
+| `SESSIONGUARD_OIDC_CLIENT_SECRET` | aus Sentinel, Anwendung `sessionguard-admin` |
+| `SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET` | aus Sentinel, Anwendung `sessionguard-access` |
 
 ---
 
-## 5. PocketID für die lokalen Agent-WebUIs
+# Teil C – Caddy Sentinel
 
-Das lokale Agent-WebUI ist als Fallback vorgesehen, wenn der Master nicht erreichbar ist.
+## 4. Policies, Sites und OIDC-Server
 
-Pro Terminalserver kann ein eigener OIDC-Client verwendet werden, zum Beispiel:
+Vollständig beschrieben in [SENTINEL.md](SENTINEL.md), Abschnitt 1:
 
-```text
-https://rds01-mgmt.hilden.info/oidc/callback
-https://rds02-mgmt.hilden.info/oidc/callback
-```
+1. Policies `sso` (Anmeldung mit Domänenkonten, zweiter Faktor), `sessionguard` (IP-Freigaben für Admin- und RDS-Netze) und `rds` (ohne Sentinel-Anmeldung) anlegen.
+2. `deploy/Caddyfile.sentinel` als `/etc/caddy/sites/sessionguard.caddy` übernehmen, Hostnamen anpassen.
+3. `/etc/caddy/sessionguard-proxy.secret` mit `SESSIONGUARD_PROXY_SECRET` anlegen (`0640 root:caddy`).
+4. OIDC-Server mit der Anmelde-Adresse `https://sso.example.org` einschalten und die Anwendungen `sessionguard-admin` und `sessionguard-access` anlegen (PKCE und Refresh-Tokens an).
 
-Alternativ kann ein zentral verwalteter OIDC-Client mehrere explizit erlaubte Redirect-URIs enthalten, sofern dies in der eigenen PocketID-Konfiguration gewünscht ist.
+### 4.1 Empfohlene AD-Gruppen
 
-Für das lokale Agent-UI nur Administratorgruppen freigeben, beispielsweise:
+| AD-Gruppe | Zweck |
+|---|---|
+| `SessionGuard-Admins` | Rolle `admin` |
+| `SessionGuard-Operators` | Rolle `operator` |
+| `SessionGuard-Helpdesk` | Rolle `helpdesk` |
+| `SessionGuard-Auditors` | Rolle `auditor` |
+| `RDS-Benutzer` | darf Guacamole nutzen (`access_auth.allowed_groups`, erlaubte Gruppen der Anwendung) |
+| `guac-…` | Guacamole-Benutzergruppen (Gruppen-Sync, Rechte auf Verbindungen) |
 
-```json
-"admin_groups": [
-  "sessionguard-admins"
-]
-```
+Sentinel liefert die **CN-Namen** der Gruppen im Claim `groups`.
 
-Das Agent-WebUI selbst lauscht standardmäßig auf Port `9091`. Für einen produktiven OIDC-Login sollte davor HTTPS über einen Reverse Proxy verwendet werden.
+## 5. OIDC für die lokalen Agent-WebUIs (optional)
 
----
-
-# Teil C – Docker-Netzwerke
-
-## 6. Netzwerkstruktur härten
-
-Die vorhandene Umgebung verwendet das externe Netzwerk:
-
-```text
-aio_proxy
-```
-
-Das funktioniert technisch. Bei Guacamole Header Authentication ist aber wichtig, dass kein nicht vertrauenswürdiger Container Guacamole direkt erreichen und selbst einen `X-Guacamole-User`-Header senden kann.
-
-Empfohlen sind daher getrennte Netze:
-
-```text
-guacamole_proxy      Traefik <-> Guacamole / ForwardAuth
-
-guacamole_backend    Guacamole <-> guacd / PostgreSQL
-
-sessionguard_control Guacamole <-> SessionGuard Master
-
-sessionguard_backend SessionGuard Master <-> SessionGuard PostgreSQL
-```
-
-### 6.1 Gemeinsames privates Control-Netz erstellen
-
-Wenn Guacamole und SessionGuard in unterschiedlichen Compose-Projekten laufen:
-
-```bash
-docker network create --internal sessionguard_control
-```
-
-In beiden Compose-Dateien anschließend:
-
-```yaml
-networks:
-  sessionguard_control:
-    external: true
-    name: sessionguard_control
-```
-
-Damit kann die Guacamole-Extension den Master intern erreichen, ohne dessen Broker-API über das Internet aufrufen zu müssen.
-
-### 6.2 Optional: dediziertes Guacamole-Proxy-Netz
-
-Besonders bei Header-Auth empfohlen:
-
-```bash
-docker network create guacamole_proxy
-```
-
-Traefik, `traefik-forward-auth` und `guacamole` werden an dieses Netzwerk angeschlossen. Andere Stacks sollten dort nicht Mitglied sein.
-
-Wenn der bestehende `aio_proxy` von sehr vielen Containern gemeinsam verwendet wird, sollte die Umstellung auf ein dediziertes Netzwerk als Security-Hardening eingeplant werden.
+In Sentinel eine weitere Anwendung `sessionguard-agent` anlegen, je Agent eine Redirect-URI `https://<agent-host>/oidc/callback`, erlaubte Gruppen z. B. `SessionGuard-Admins`.
 
 ---
 
-# Teil D – Gitea CI/CD
+# Teil D – CI/CD
 
-## 7. CI/CD-Dateien ins Repository übernehmen
+## 6. Images
 
-Im SessionGuard-Repository sollten vorhanden sein:
-
-```text
-.gitea/workflows/release.yml
-deploy/guacamole/Dockerfile.guacamole
-guacamole-extension/
-```
-
-Die Pipeline erzeugt bei Push auf `main`:
-
-```text
-git.send.nrw/sendnrw/<repo>:<version>
-git.send.nrw/sendnrw/<repo>:latest
-
-git.send.nrw/sendnrw/<repo>-guacamole:<version>
-git.send.nrw/sendnrw/<repo>-guacamole:latest
-```
-
-Zusätzlich wird veröffentlicht:
-
-```text
-sessionguard-guacamole.jar
-```
-
-in der Gitea Generic Package Registry.
-
-### 7.1 Gitea Secrets
-
-Im Repository mindestens hinterlegen:
-
-```text
-DOCKER_USERNAME
-DOCKER_PASSWORD
-```
-
-Der verwendete Account benötigt Schreibrechte auf:
-
-- Container Registry
-- Generic Package Registry
-
-Später empfiehlt sich eine Trennung in eigene Package-Credentials.
-
-### 7.2 Release-Versionen
-
-Die CI verwendet:
-
-```bash
-git describe --tags --always | sed 's/^v//'
-```
-
-Für einen sauberen Release:
-
-```bash
-git tag v0.5.0
-git push origin v0.5.0
-git push origin main
-```
-
-Ein Commit exakt auf Tag `v0.5.0` erzeugt dann:
-
-```text
-git.send.nrw/sendnrw/sessionguard:0.5.0
-git.send.nrw/sendnrw/sessionguard-guacamole:0.5.0
-```
-
-`latest` wird ebenfalls aktualisiert.
-
-### 7.3 Release prüfen
-
-```bash
-docker pull git.send.nrw/sendnrw/sessionguard:0.5.0
-docker pull git.send.nrw/sendnrw/sessionguard-guacamole:0.5.0
-```
-
-Für Produktion möglichst einen festen Versions-Tag und nicht ausschließlich `latest` verwenden.
+Die GitHub-Actions-Workflows bauen `sessionguard` und `sessionguard-guacamole` und veröffentlichen sie in GHCR. Details: `deploy/guacamole/CI-CD.md`.
 
 ---
 
-# Teil E – SessionGuard Master
+# Teil E – SessionGuard-Stack
 
-## 8. Verzeichnisstruktur anlegen
-
-Auf dem Docker-Host beispielsweise:
+## 7. Stack konfigurieren
 
 ```bash
-mkdir -p /opt/sessionguard
-cd /opt/sessionguard
+cd deploy
+cp .env.example .env
+cp master.json.example master.json
+chmod 600 .env master.json
 ```
 
-Anlegen:
+- `.env`: Images, Secrets aus Teil B, `GUAC_ADMIN_USER` (AD-Benutzername in Kleinbuchstaben, ersetzt `guacadmin`), `SENTINEL_ISSUER_HOST`.
+- `master.json`: Hostnamen, Client-IDs, `rbac.groups`, `access_auth.allowed_groups`, `guacamole_groups`.
+- Interne CA von Sentinel für das Zertifikat der Anmelde-Adresse: Root-Zertifikat nach `deploy/ca/`.
 
-```text
-/opt/sessionguard/
-├── docker-compose.yml
-├── .env
-└── master.json
-```
-
----
-
-## 9. `.env` für SessionGuard erstellen
-
-Beispiel:
-
-```dotenv
-SESSIONGUARD_VERSION=0.5.0
-POSTGRES_VERSION=17
-
-TRAEFIK_NETWORK=aio_proxy
-SESSIONGUARD_HOST=sessionguard.hilden.info
-TRAEFIK_ENTRYPOINT=websecure
-TRAEFIK_CERTRESOLVER=letsencrypt
-
-SESSIONGUARD_DB_NAME=sessionguard
-SESSIONGUARD_DB_USER=sessionguard
-SESSIONGUARD_DB_PASSWORD=<SEHR_LANGES_DB_PASSWORT>
-
-SESSIONGUARD_ENROLLMENT_TOKEN=<SEPARATES_ENROLLMENT_TOKEN>
-SESSIONGUARD_BROKER_API_KEY=<SEPARATER_BROKER_API_KEY>
-SESSIONGUARD_OIDC_CLIENT_SECRET=<POCKETID_SESSIONGUARD_CLIENT_SECRET>
-
-# Optional
-SESSIONGUARD_ALERT_WEBHOOK_URL=
-```
-
-Datei schützen:
+## 8. Stack starten
 
 ```bash
-chmod 600 .env
-```
-
----
-
-## 10. `master.json` erstellen
-
-Beispiel für die vorhandene Domain:
-
-```json
-{
-  "listen": ":8080",
-  "public_url": "https://sessionguard.hilden.info",
-  "data_file": "/var/lib/sessionguard/master.json",
-  "database_url": "",
-  "enrollment_token": "SET-BY-SESSIONGUARD_ENROLLMENT_TOKEN",
-  "offline_after_seconds": 30,
-  "history_limit": 50000,
-  "oidc": {
-    "issuer": "https://auth.hilden.info",
-    "client_id": "<POCKETID_SESSIONGUARD_CLIENT_ID>",
-    "client_secret": "SET-BY-SESSIONGUARD_OIDC_CLIENT_SECRET",
-    "redirect_url": "https://sessionguard.hilden.info/oidc/callback",
-    "admin_groups": [],
-    "secure_cookie": true
-  },
-  "rbac": {
-    "default_role": "viewer",
-    "groups": {
-      "sessionguard-admins": ["admin"],
-      "sessionguard-helpdesk": ["helpdesk"],
-      "sessionguard-operators": ["operator"],
-      "sessionguard-policy": ["policy_admin"],
-      "sessionguard-profile": ["profile_admin"],
-      "sessionguard-auditors": ["auditor"]
-    }
-  },
-  "broker": {
-    "enabled": true,
-    "api_key": "SET-BY-SESSIONGUARD_BROKER_API_KEY",
-    "lease_seconds": 900,
-    "min_health_score": 60,
-    "reconnect_existing": true,
-    "single_session_per_user": true,
-    "default_farm_id": ""
-  },
-  "alerts": {
-    "enabled": true,
-    "webhook_url": "",
-    "cpu_percent": 90,
-    "memory_percent": 90,
-    "disk_free_gb": 10,
-    "health_score": 50,
-    "offline_seconds": 120,
-    "profile_failures": 3,
-    "disconnected_sessions": 20,
-    "logon_duration_seconds": 30,
-    "notification_min_interval_seconds": 900
-  }
-}
-```
-
-Die echten Secrets werden bewusst nicht in `master.json` geschrieben, sondern durch ENV-Variablen überschrieben.
-
----
-
-## 11. SessionGuard Master Compose erstellen
-
-Für die Registry-basierte Installation:
-
-```yaml
-services:
-  sessionguard-postgres:
-    image: postgres:${POSTGRES_VERSION:-17}
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${SESSIONGUARD_DB_NAME:-sessionguard}
-      POSTGRES_USER: ${SESSIONGUARD_DB_USER:-sessionguard}
-      POSTGRES_PASSWORD: ${SESSIONGUARD_DB_PASSWORD:?required}
-    volumes:
-      - sessionguard-postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    networks:
-      - sessionguard_backend
-
-  sessionguard-master:
-    image: git.send.nrw/sendnrw/sessionguard:${SESSIONGUARD_VERSION:-latest}
-    restart: unless-stopped
-    depends_on:
-      sessionguard-postgres:
-        condition: service_healthy
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    environment:
-      SESSIONGUARD_DATABASE_URL: postgres://${SESSIONGUARD_DB_USER:-sessionguard}:${SESSIONGUARD_DB_PASSWORD}@sessionguard-postgres:5432/${SESSIONGUARD_DB_NAME:-sessionguard}?sslmode=disable
-      SESSIONGUARD_ENROLLMENT_TOKEN: ${SESSIONGUARD_ENROLLMENT_TOKEN}
-      SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY}
-      SESSIONGUARD_OIDC_CLIENT_SECRET: ${SESSIONGUARD_OIDC_CLIENT_SECRET}
-      SESSIONGUARD_ALERT_WEBHOOK_URL: ${SESSIONGUARD_ALERT_WEBHOOK_URL:-}
-    volumes:
-      - ./master.json:/etc/sessionguard/master.json:ro
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    networks:
-      - sessionguard_backend
-      - sessionguard_control
-      - proxy
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=${TRAEFIK_NETWORK}
-      - traefik.http.routers.sessionguard.rule=Host(`${SESSIONGUARD_HOST}`)
-      - traefik.http.routers.sessionguard.entrypoints=${TRAEFIK_ENTRYPOINT}
-      - traefik.http.routers.sessionguard.tls=true
-      - traefik.http.routers.sessionguard.tls.certresolver=${TRAEFIK_CERTRESOLVER}
-      - traefik.http.services.sessionguard.loadbalancer.server.port=8080
-
-networks:
-  sessionguard_backend:
-    internal: true
-  sessionguard_control:
-    external: true
-    name: sessionguard_control
-  proxy:
-    external: true
-    name: ${TRAEFIK_NETWORK:-aio_proxy}
-
-volumes:
-  sessionguard-postgres:
-```
-
-Wenn `sessionguard_control` noch nicht existiert:
-
-```bash
-docker network create --internal sessionguard_control
-```
-
----
-
-## 12. Master starten
-
-```bash
-cd /opt/sessionguard
-docker compose pull
 docker compose up -d
-```
-
-Status:
-
-```bash
 docker compose ps
+docker compose logs --tail=100 sessionguard-master
 ```
 
-Logs:
+Erwartung: `master … listening on :8080 (store=postgres)` ohne OIDC-Fehler. Danach:
 
 ```bash
-docker compose logs -f sessionguard-master
+curl -s https://sessionguard.example.org/healthz
+curl -s https://sso.example.org/.well-known/openid-configuration
 ```
 
-Health intern testen:
+## 9. RBAC prüfen
+
+Mit je einem Konto pro Rolle an `https://sessionguard.example.org/` anmelden. Ein Konto ohne passende Gruppe sieht bereits in Sentinel „Dein Konto hat keinen Zugriff“.
+
+---
+
+# Teil F – Guacamole
+
+## 10. Guacamole-Anmeldung prüfen
+
+1. `https://rds.example.org/` aufrufen → Sentinel-Anmeldeseite.
+2. Mit AD-Konto und zweitem Faktor anmelden → Guacamole mit dem AD-Benutzernamen.
+3. `guacadmin` ist gelöscht; der in `GUAC_ADMIN_USER` gesetzte Benutzer ist Guacamole-Administrator.
+4. Guacamole-Benutzergruppen mit den Namen der `guac-…`-Gruppen anlegen und Verbindungen den Gruppen zuweisen.
+
+## 11. Header-Auth absichern
+
+- Guacamole und Master veröffentlichen ihre Ports nur auf `127.0.0.1`.
+- Die Extension akzeptiert Identitäts-Header nur zusammen mit `SESSIONGUARD_PROXY_SECRET`. Prüfen auf dem Host:
 
 ```bash
-docker compose exec sessionguard-master \
-  wget -qO- http://127.0.0.1:8080/healthz
+curl -s -H 'X-Guacamole-User: guacadmin' -X POST http://127.0.0.1:8081/api/tokens
+# erwartet: keine Anmeldung (403/401), im Guacamole-Log
+# "SessionGuard ignored identity header from a request without valid proxy secret"
 ```
-
-Extern testen:
-
-```text
-https://sessionguard.hilden.info
-```
-
-Beim ersten Login sollte PocketID erscheinen.
-
----
-
-## 13. RBAC prüfen
-
-Mindestens zwei Tests durchführen:
-
-1. Benutzer in `sessionguard-admins` anmelden.
-2. Benutzer ohne Admin-Gruppe bzw. mit Viewer-Gruppe anmelden.
-
-Der zweite Benutzer darf keine administrativen Änderungen durchführen können.
-
-Erst danach weitere Agents anbinden.
-
----
-
-# Teil F – Guacamole mit SessionGuard Extension
-
-## 14. Wichtige Korrektur der vorhandenen PocketID-/ForwardAuth-Konfiguration
-
-In der vorhandenen `.env` steht:
-
-```text
-TFA_HOST=guacauth.hilden.info
-```
-
-Daher muss die PocketID Redirect URI für den **traefik-forward-auth-Client** dazu passen:
-
-```text
-https://guacauth.hilden.info/portals/guacamole/oauth2/callback
-```
-
-Ein alter Kommentar mit `guac-sso.hilden.info` sollte entfernt werden, damit es später nicht zu Fehlkonfigurationen kommt.
-
-Der SessionGuard Master benötigt **einen eigenen OIDC-Client**. ForwardAuth- und SessionGuard-Client-Secret dürfen nicht identisch sein.
-
----
-
-## 15. Guacamole-Image austauschen
-
-Im bestehenden Compose nur beim eigentlichen `guacamole`-Service das Image ändern.
-
-Vorher:
-
-```yaml
-image: guacamole/guacamole:${GUACAMOLE_VERSION:-1.6.0}
-```
-
-Nachher:
-
-```yaml
-image: git.send.nrw/sendnrw/sessionguard-guacamole:${SESSIONGUARD_VERSION:-0.5.0}
-```
-
-`guac-init` kann weiterhin das offizielle Guacamole-Image verwenden.
-
----
-
-## 16. SessionGuard-Variablen zu Guacamole ergänzen
-
-Im `guacamole.environment` ergänzen:
-
-```yaml
-SESSIONGUARD_MASTER_URL: http://sessionguard-master:8080
-SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY}
-SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
-```
-
-In die Guacamole `.env` zusätzlich:
-
-```dotenv
-SESSIONGUARD_VERSION=0.5.0
-SESSIONGUARD_BROKER_API_KEY=<EXAKT_DERSELBE_BROKER_API_KEY_WIE_AM_MASTER>
-```
-
-Der Broker API Key ist **kein Benutzer-Secret**, sondern ein Service-to-Service-Key zwischen Guacamole-Extension und SessionGuard Master.
-
----
-
-## 17. Guacamole an `sessionguard_control` anschließen
-
-Beim `guacamole`-Service:
-
-```yaml
-networks:
-  - aio_proxy
-  - sessionguard_control
-```
-
-Am Ende der Compose-Datei:
-
-```yaml
-networks:
-  aio_proxy:
-    external: true
-  sessionguard_control:
-    external: true
-    name: sessionguard_control
-```
-
-Danach kann Guacamole den Master per Docker DNS erreichen:
-
-```text
-http://sessionguard-master:8080
-```
-
-Wenn Master und Guacamole in unterschiedlichen Compose-Projekten laufen, funktioniert der DNS-Name nur dann zuverlässig, wenn beide Container im gleichen externen Docker-Netz hängen und dort der Name/Alias verfügbar ist. Falls der tatsächliche Containername anders lautet, einen expliziten Alias setzen oder den tatsächlichen DNS-Namen in `SESSIONGUARD_MASTER_URL` verwenden.
-
----
-
-## 18. Guacamole neu starten
-
-```bash
-docker compose pull guacamole
-docker compose up -d guacamole
-```
-
-Logs prüfen:
-
-```bash
-docker compose logs -f guacamole
-```
-
-Die SessionGuard-Extension muss beim Guacamole-Start ohne API-/Classloader-Fehler geladen werden.
-
----
-
-## 19. Header-Auth absichern
-
-Die vorhandene Konfiguration entfernt vor ForwardAuth bereits eingehende Identitätsheader:
-
-```yaml
-- traefik.http.middlewares.guac-strip-auth.headers.customrequestheaders.X-Guacamole-User=
-- traefik.http.middlewares.guac-strip-auth.headers.customrequestheaders.X-Forwarded-User=
-- traefik.http.middlewares.guac-strip-auth.headers.customrequestheaders.X-Authenticated-User=
-```
-
-und verwendet anschließend:
-
-```yaml
-- traefik.http.routers.guacamole.middlewares=guac-strip-auth,guac-pocketid
-```
-
-Das ist richtig gedacht.
-
-Zusätzlich sicherstellen:
-
-- Guacamole-Port `8080` nicht direkt veröffentlichen.
-- Guacamole nicht aus beliebigen Container-Netzen erreichbar machen.
-- `aio_proxy` möglichst nicht als allgemeines Netz für unzusammenhängende Stacks verwenden.
-- `guacd` und Guacamole-PostgreSQL nur in einem internen Backend-Netz betreiben.
-
-Ein direkter Request eines fremden Containers an Guacamole darf nicht durch einen selbst gesetzten `X-Guacamole-User` authentifiziert werden können.
 
 ---
 
@@ -804,18 +216,18 @@ Beispiel für `RDS01`:
 ```json
 {
   "listen": ":9091",
-  "public_url": "https://rds01-mgmt.hilden.info",
+  "public_url": "https://rds01-mgmt.example.org",
   "data_dir": "C:\\ProgramData\\SessionGuard",
-  "master_url": "https://sessionguard.hilden.info",
+  "master_url": "https://sessionguard.example.org",
   "enrollment_token": "SET-BY-SESSIONGUARD_ENROLLMENT_TOKEN",
   "heartbeat_seconds": 10,
   "oidc": {
-    "issuer": "https://auth.hilden.info",
-    "client_id": "<POCKETID_AGENT_CLIENT_ID>",
+    "issuer": "https://sso.example.org",
+    "client_id": "sessionguard-agent",
     "client_secret": "SET-BY-SESSIONGUARD_OIDC_CLIENT_SECRET",
-    "redirect_url": "https://rds01-mgmt.hilden.info/oidc/callback",
+    "redirect_url": "https://rds01-mgmt.example.org/oidc/callback",
     "admin_groups": [
-      "sessionguard-admins"
+      "SessionGuard-Admins"
     ],
     "secure_cookie": true
   },
@@ -1005,7 +417,7 @@ Falls erforderlich Windows Event Log bzw. Dienst-Logs prüfen.
 Anschließend Master öffnen:
 
 ```text
-https://sessionguard.hilden.info
+https://sessionguard.example.org
 ```
 
 Der Server sollte nach Enrollment/Heartbeat in der Serverliste erscheinen.
@@ -1783,8 +1195,8 @@ Kein Active/Active-Deployment konfigurieren.
 
 - [ ] SessionGuard PostgreSQL bereitstellen
 - [ ] SessionGuard Master bereitstellen
-- [ ] HTTPS/Traefik konfigurieren
-- [ ] PocketID OIDC testen
+- [ ] Caddy Sentinel: Policies, Sites, OIDC-Server
+- [ ] AD-Login über Sentinel testen (Admin-UI und Guacamole)
 - [ ] RBAC testen
 - [ ] PostgreSQL-Backup testen
 
@@ -1896,7 +1308,8 @@ Kein Active/Active-Deployment konfigurieren.
 - [ ] Helpdesk-Rechte sind begrenzt
 - [ ] Operator kann Maintenance/Sessions steuern
 - [ ] Policy Admin kann Policy ändern/rollbacken
-- [ ] fremder Container kann Guacamole nicht per gefälschtem `X-Guacamole-User` umgehen
+- [ ] gefälschter `X-Guacamole-User` – über Caddy und direkt auf `127.0.0.1:8081` – meldet niemanden an
+- [ ] Konto in Sentinel abmelden → SessionGuard-Sitzungen enden nach `revalidate_minutes`
 
 ---
 
@@ -2002,7 +1415,7 @@ PowerShell:
 
 ```powershell
 Get-Service SessionGuardAgent
-Test-NetConnection sessionguard.hilden.info -Port 443
+Test-NetConnection sessionguard.example.org -Port 443  # Netz des Hosts in der Sentinel-Policy "sessionguard" freigegeben?
 ```
 
 Master-Logs:
@@ -2020,7 +1433,7 @@ Prüfen:
 ```text
 SessionGuard Master erreichbar?
 SESSIONGUARD_BROKER_API_KEY identisch?
-Guacamole und Master im sessionguard_control Netzwerk?
+Guacamole und Master im selben Compose-Projekt (Netz "backend")?
 Farm aktiviert?
 Resource aktiviert?
 Resource korrekt mit Guacamole Connection gemappt?
@@ -2030,7 +1443,8 @@ mindestens ein gesunder Online-Host in Farm?
 Netzwerk prüfen:
 
 ```bash
-docker network inspect sessionguard_control
+docker compose exec sessionguard-master wget -qO- http://127.0.0.1:8080/healthz
+docker compose logs guacamole | grep -i sessionguard
 ```
 
 Guacamole-Logs:
@@ -2099,25 +1513,27 @@ Ein Restore, der das konfigurierte Restore-Fenster überschritten hat, wird bewu
 
 ## 63. OIDC Redirect-Fehler
 
-Die Redirect URI muss Zeichen für Zeichen zum PocketID-Client passen.
+Die Redirect URI muss Zeichen für Zeichen zur Anwendung in Sentinel passen (Sentinel zeigt sonst „Die Rücksprungadresse … ist nicht eingetragen“).
 
-Master:
+Admin-Konsole:
 
 ```text
-https://sessionguard.hilden.info/oidc/callback
+https://sessionguard.example.org/oidc/callback
 ```
 
-ForwardAuth entsprechend der vorhandenen ENV:
+Guacamole-Zugang:
 
 ```text
-https://guacauth.hilden.info/portals/guacamole/oauth2/callback
+https://rds.example.org/_sessionguard/auth/oidc/callback
 ```
 
 Agent beispielsweise:
 
 ```text
-https://rds01-mgmt.hilden.info/oidc/callback
+https://rds01-mgmt.example.org/oidc/callback
 ```
+
+„IdP issued no refresh token“ im Master-Log: bei der Anwendung in Sentinel „Refresh-Tokens ausgeben“ einschalten (Pflicht mit `revalidate_minutes`).
 
 Außerdem `public_url`, `redirect_url`, DNS und TLS prüfen.
 
@@ -2207,21 +1623,21 @@ Vor dem breiten Rollout müssen alle Punkte erfüllt sein:
 
 # 67. Empfohlene Reihenfolge für diese konkrete Umgebung
 
-Für die vorhandene Guacamole/PocketID-Installation würde ich genau so vorgehen:
+Empfohlene Reihenfolge:
 
 ```text
-1. sessionguard.hilden.info in DNS anlegen
-2. separaten PocketID OIDC Client für SessionGuard erstellen
-3. RBAC-Gruppen in PocketID erstellen/zuweisen
-4. sessionguard_control Docker-Netz erstellen
-5. SessionGuard PostgreSQL + Master deployen
+1. DNS für sso., sessionguard. und rds. anlegen
+2. Sentinel: AD verbinden, Policies, OIDC-Server, Anwendungen
+3. RBAC- und Zugangsgruppen im AD anlegen/zuweisen
+4. Caddyfile-Sites und Proxy-Secret übernehmen
+5. SessionGuard-Stack (deploy/) starten
 6. OIDC/RBAC im Master prüfen
 7. einen RDS-Canary auswählen
 8. Agent dort installieren
 9. Director/Health prüfen
 10. Office-Canary-Farm erstellen
-11. Guacamole auf sessionguard-guacamole:<version> umstellen
-12. Guacamole mit sessionguard_control verbinden
+11. Guacamole-Anmeldung über Sentinel prüfen
+12. Guacamole-Gruppen anlegen, Rechte zuweisen
 13. eine neue Guacamole-Testconnection mit ${SESSIONGUARD_HOST} erstellen
 14. passende Published Resource in SessionGuard erstellen
 15. Broker-Verbindung testen
@@ -2281,12 +1697,17 @@ README.md
 configs/master.example.json
 configs/agent.example.json
 deploy/docker-compose.yml
+deploy/docker-compose.workers.yml
 deploy/.env.example
+deploy/master.json.example
+deploy/Caddyfile.sentinel
 deploy/guacamole/Dockerfile.guacamole
-deploy/guacamole/docker-compose.sessionguard.example.yml
+deploy/guacamole/harden-guacamole-db.sql
 deploy/guacamole/CI-CD.md
 scripts/build.ps1
 scripts/install-agent.ps1
+docs/SENTINEL.md
+docs/ACCESS-AUTH.md
 docs/ARCHITECTURE.md
 docs/BROKER.md
 docs/DIRECTOR.md

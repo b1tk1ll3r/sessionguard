@@ -44,13 +44,14 @@ echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
 Then point the stacks at GHCR, e.g.:
 
 ```dotenv
-# production/sessionguard/.env
+# deploy/.env
 SESSIONGUARD_IMAGE=ghcr.io/<owner>/sessionguard:latest
-# production/guac-worker/.env.guacXX
 SESSIONGUARD_GUAC_IMAGE=ghcr.io/<owner>/sessionguard-guacamole:latest
-# production/public-vps/.env
-EDGEGUARD_IMAGE=ghcr.io/<owner>/sessionguard-edgeguard
 ```
+
+The `sessionguard-edgeguard` image is still published for deployments without
+Caddy Sentinel; the Sentinel reference deployment (`docs/SENTINEL.md`) does not
+need it.
 
 For production, prefer a fixed version tag (`:0.6.0`) over `latest`.
 

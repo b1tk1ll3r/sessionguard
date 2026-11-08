@@ -1,8 +1,8 @@
-# RBAC and PocketID Group Mapping
+# RBAC and IdP Group Mapping
 
 ## Identity
 
-The Master uses standard OIDC and expects the `groups` claim when group-based RBAC is configured. PocketID can provide this claim to the SessionGuard OIDC client.
+The Master uses standard OIDC and expects the `groups` claim when group-based RBAC is configured. Caddy Sentinel provides this claim (CN names of the AD groups) to the SessionGuard OIDC client.
 
 ## Configuration
 
@@ -44,7 +44,7 @@ If `rbac.groups` is empty, all authenticated users receive `admin` for backwards
 
 Do not reuse credentials across these trust relationships:
 
-- PocketID OIDC client secret: browser/admin authentication
+- OIDC client secret: browser/admin authentication
 - broker API key: Guacamole extension → Master
 - enrollment token: new Agent → Master bootstrap
 - per-agent bearer token: established Agent → Master heartbeat

@@ -6,7 +6,8 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 
-// DefaultScopes keeps the historic Pocket ID behavior. Keycloak rejects
+// DefaultScopes request the claims SessionGuard needs (Caddy Sentinel,
+// Pocket ID, Authentik). Keycloak rejects
 // unknown scopes (invalid_scope), so Keycloak deployments configure
 // "scopes" explicitly, usually without "groups".
 var DefaultScopes = []string{oidc.ScopeOpenID, "profile", "email", "groups"}
@@ -75,4 +76,18 @@ func GroupsFromClaims(claims map[string]any, paths []string) []string {
 // "Full group path" is enabled; subgroups stay distinguishable by their path.
 func GroupMatches(got, configured string) bool {
 	return strings.EqualFold(strings.TrimPrefix(strings.TrimSpace(got), "/"), strings.TrimPrefix(strings.TrimSpace(configured), "/"))
+}
+
+// withOfflineAccess adds the offline_access scope (refresh tokens) when
+// session revalidation is enabled.
+func withOfflineAccess(scopes []string, enabled bool) []string {
+	if !enabled {
+		return scopes
+	}
+	for _, s := range scopes {
+		if s == oidc.ScopeOfflineAccess {
+			return scopes
+		}
+	}
+	return append(scopes, oidc.ScopeOfflineAccess)
 }

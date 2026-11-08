@@ -4,8 +4,8 @@
 
 SessionGuard separates the functions commonly bundled into a Citrix deployment into components that can be independently replaced:
 
-- **PocketID/OIDC**: administrator identity and group claims.
-- **Traefik / forward-auth**: trusted ingress for Guacamole.
+- **OIDC provider** (reference: Caddy Sentinel with AD/LDAP login): user and administrator identity and group claims.
+- **Reverse proxy with ForwardAuth** (reference: Caddy Sentinel): TLS, WAF/IDS and trusted ingress for Guacamole.
 - **Apache Guacamole**: browser gateway and RDP transport.
 - **Windows RDS**: Windows session runtime.
 - **SessionGuard Master**: broker, Director, policy control plane, history, alerting and command queue.
@@ -31,7 +31,7 @@ Guacamole reaches only the broker API using a dedicated API key:
 Guacamole extension --HTTP(S) + bearer key--> /api/v1/broker/tokens
 ```
 
-That API key is separate from agent enrollment credentials and PocketID secrets.
+That API key is separate from agent enrollment credentials and OIDC client secrets.
 
 ## Master persistence
 

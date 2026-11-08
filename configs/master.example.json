@@ -7,8 +7,8 @@
   "offline_after_seconds": 30,
   "history_limit": 50000,
   "oidc": {
-    "issuer": "https://auth.example.org",
-    "client_id": "SESSIONGUARD-POCKETID-CLIENT-ID",
+    "issuer": "https://sso.example.org",
+    "client_id": "sessionguard-admin",
     "client_secret": "SET-BY-SESSIONGUARD_OIDC_CLIENT_SECRET",
     "redirect_url": "https://sessionguard.example.org/oidc/callback",
     "logout_redirect_url": "https://sessionguard.example.org/",

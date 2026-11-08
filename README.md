@@ -2,13 +2,19 @@
 
 SessionGuard is a Go-based **RDS control plane** for Windows Remote Desktop Session Hosts. It is designed to complement Apache Guacamole: Guacamole remains the HTML5/RDP gateway, while SessionGuard provides Citrix-like broker, Director, policy, profile-lifecycle and operations functions.
 
-**Current development version: 0.6.0 (Multi-Monitor span mode + security hardening)** — see `CHANGELOG.md` and `docs/MULTI-MONITOR.md`.
+**Current development version: 0.7.0 (Caddy Sentinel reference deployment, session revalidation)** — see `CHANGELOG.md` and `docs/SENTINEL.md`.
 
-> SessionGuard is not an ICA/HDX implementation and does not replace the Windows RDS runtime. It deliberately reuses standard RDP/WTS, Guacamole and PocketID/OIDC.
+> SessionGuard is not an ICA/HDX implementation and does not replace the Windows RDS runtime. It deliberately reuses standard RDP/WTS, Guacamole and OpenID Connect. It works with any OIDC provider and any reverse proxy with ForwardAuth; the reference deployment uses Caddy Sentinel for both.
+
+## 0.7.0 Caddy Sentinel as reverse proxy and identity provider
+
+- Reference deployment `deploy/`: Caddy Sentinel on the host (reverse proxy, WAF/IDS, OIDC server with Active Directory/LDAP login and second factor), the whole SessionGuard stack – Master, Guacamole, guacd, both PostgreSQL databases – in one Docker Compose project bound to `127.0.0.1`. NetBird, Pocket ID, Traefik and the public-VPS/worker split are no longer needed. See `docs/SENTINEL.md`.
+- `revalidate_minutes` (admin console and access auth): sessions are renewed at the IdP with refresh tokens, so a sign-out, lock or removed group at the IdP ends SessionGuard sessions without back-channel logout.
+- Guacamole extension: identity headers count only with the reverse proxy's shared secret (`SESSIONGUARD_PROXY_SECRET`), a missing identity ends the Guacamole session (fail closed), broker answers are limited to `SESSIONGUARD_*` tokens.
 
 ## 0.5.2 Public EdgeGuard
 
-The optional public-VPS deployment now includes `sessionguard-edgeguard`, a small Go service called by Caddy before requests reach SessionGuard or Guacamole. It provides static CIDR blacklisting, global/per-IP/endpoint token-bucket limits, scanner-path detection, persistent temporary bans, method/host/URI guards and local metrics. Caddy is additionally hardened with strict SNI/Host matching, a request-header timeout and smaller header ceiling. This protects application backends against common Internet abuse; provider-side DDoS filtering is still required for attacks that saturate the network link. See `docs/EDGE-SECURITY.md` and `deploy/public-vps-netbird/`.
+The optional `sessionguard-edgeguard` is a small Go service called by a plain Caddy before requests reach SessionGuard or Guacamole (not needed with Caddy Sentinel, which brings its own rate limits, IDS and bans). It provides static CIDR blacklisting, global/per-IP/endpoint token-bucket limits, scanner-path detection, persistent temporary bans, method/host/URI guards and local metrics. Caddy is additionally hardened with strict SNI/Host matching, a request-header timeout and smaller header ceiling. This protects application backends against common Internet abuse; provider-side DDoS filtering is still required for attacks that saturate the network link. See `docs/EDGE-SECURITY.md`.
 
 ## 0.5.1 Web UI refresh
 
@@ -24,7 +30,7 @@ The Master and local Agent consoles now use a modal-first, responsive Vanilla-Ja
 - The Guacamole extension now includes plain JavaScript which detects Guacamole logout and performs the full SessionGuard/PocketID logout, while also polling access-session status to close stale browser sessions.
 - Recommended deployment exposes `/_sessionguard/auth/*` on the Guacamole hostname and routes that prefix to the same Master container.
 
-See `docs/ACCESS-AUTH.md` for the PocketID and Traefik migration.
+See `docs/ACCESS-AUTH.md`.
 
 ## 0.4.1 RemoteApp robustness
 
@@ -89,7 +95,7 @@ The master UI now maintains an explicit `agentCache` from the dashboard response
 - `${SESSIONGUARD_REMOTE_APP_DIR}`
 - `${SESSIONGUARD_REMOTE_APP_ARGS}`
 
-This keeps PocketID / header authentication and the browser gateway separate from broker logic. See `docs/GUACAMOLE.md`.
+This keeps OIDC / header authentication and the browser gateway separate from broker logic. See `docs/GUACAMOLE.md`.
 
 ### Director-style operations
 
@@ -111,7 +117,7 @@ This keeps PocketID / header authentication and the browser gateway separate fro
 - Append-only audit and session-history tables with retention and indexes.
 - JSONB control-plane state for agents, farms, resources, leases, policies and alerts.
 - JSON-file persistence remains available as a small single-node fallback / migration path.
-- PocketID / generic OIDC authentication with Authorization Code + PKCE (S256).
+- OIDC authentication (Caddy Sentinel, Keycloak, Pocket ID, …) with Authorization Code + PKCE (S256) and optional refresh-token revalidation.
 - Group-to-role RBAC.
 - Policy version history and rollback for global, farm and agent policies.
 - Agent-initiated HTTPS heartbeats and command delivery only; no inbound management port from master to RDS hosts.
@@ -130,17 +136,16 @@ The v0.2 functionality remains:
 - A failed backup blocks local profile deletion.
 - Cleanup with grace period, exclusions, allowed profile roots, final WTS recheck and `DeleteProfileW`.
 - Structured templates for files, folders, `.url` and `.lnk` shortcuts.
-- Local PocketID/OIDC-protected fallback UI on every agent.
+- Local OIDC-protected fallback UI on every agent.
 
 See `docs/PROFILE-LIFECYCLE.md` for the deliberately limited scope of profile synchronization.
 
 ## Target architecture
 
 ```text
-PocketID
-   |
-Traefik / trusted header-auth boundary
-   |
+Caddy Sentinel (host): TLS, WAF/IDS, OIDC server ── AD/LDAP
+   |  forward_auth + proxy secret (trusted header-auth boundary)
+   v
 Apache Guacamole 1.6
  + sessionguard-guacamole extension
    |
@@ -156,32 +161,18 @@ SessionGuard Master  ---------------- PostgreSQL
  Agent         Agent         Agent
 ```
 
-## Quick start: master
+## Quick start: master and Guacamole
 
-Copy the example configuration and environment file:
-
-```bash
-cp configs/master.example.json deploy/master.json
-cp deploy/.env.example deploy/.env
-```
-
-Set at least:
-
-- `SESSIONGUARD_DB_PASSWORD`
-- `SESSIONGUARD_ENROLLMENT_TOKEN`
-- `SESSIONGUARD_BROKER_API_KEY`
-- `SESSIONGUARD_OIDC_CLIENT_SECRET`
-- PocketID issuer/client/redirect values in `master.json`
-- `TRAEFIK_NETWORK`
-
-Then:
+Set up Caddy Sentinel first (AD connection, policies, OIDC server with the applications `sessionguard-admin` and `sessionguard-access`, sites from `deploy/Caddyfile.sentinel`) – step by step in `docs/SENTINEL.md`. Then:
 
 ```bash
 cd deploy
-docker compose up -d --build
+cp .env.example .env               # secrets: openssl rand -hex 32
+cp master.json.example master.json # host names, client IDs, AD group names
+docker compose up -d
 ```
 
-For production, expose the master only through your existing TLS reverse proxy. The bundled compose publishes port 8080 only on `127.0.0.1` as an additional safety measure.
+Every published port is bound to `127.0.0.1`; only Caddy Sentinel on the host reaches the stack. With another IdP or proxy, adapt `master.json` and see `docs/ACCESS-AUTH.md`.
 
 ## Quick start: Windows agent
 
@@ -191,10 +182,10 @@ Build on a machine with Go module access:
 .\scripts\build.ps1
 ```
 
-Copy `configs/agent.example.json`, configure PocketID, the master URL and your initial policy, then install from an elevated PowerShell:
+Copy `configs/agent.example.json`, configure the OIDC client for the local UI (optional), the master URL and your initial policy, then install from an elevated PowerShell:
 
 ```powershell
-.\scripts\install-agent.ps1 -BinaryPath .\dist\sessionguard-agent.exe -ConfigPath .\configs\agent.json
+.\scripts\install-agent.ps1 -Binary .\dist\sessionguard-agent.exe -Config .\configs\agent.json
 ```
 
 For SMB profile stores, prefer a gMSA and grant it the required share/NTFS permissions. Do not store SMB passwords in the agent JSON.
@@ -217,7 +208,7 @@ hostname = ${SESSIONGUARD_HOST}
 
 A RemoteApp can additionally use the `SESSIONGUARD_REMOTE_APP*` tokens. Map the Guacamole connection ID or name to a SessionGuard Resource in the master UI.
 
-**Important:** with Guacamole header authentication, untrusted containers or networks must not be able to reach Guacamole directly and forge the authentication header. See `docs/GUACAMOLE.md` and `docs/SECURITY.md`.
+**Important:** with Guacamole header authentication, set `SESSIONGUARD_PROXY_SECRET` so the extension accepts identity headers only from the reverse proxy, and still keep Guacamole off untrusted networks. See `docs/ACCESS-AUTH.md` and `docs/SECURITY.md`.
 
 ## Master environment overrides
 
@@ -228,7 +219,8 @@ Secrets do not need to be stored in JSON:
 | `SESSIONGUARD_DATABASE_URL` | PostgreSQL DSN |
 | `SESSIONGUARD_ENROLLMENT_TOKEN` | one-time agent enrollment shared secret |
 | `SESSIONGUARD_BROKER_API_KEY` | Guacamole-extension → broker credential |
-| `SESSIONGUARD_OIDC_CLIENT_SECRET` | master PocketID/OIDC client secret |
+| `SESSIONGUARD_OIDC_CLIENT_SECRET` | admin console OIDC client secret |
+| `SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET` | Guacamole access OIDC client secret |
 | `SESSIONGUARD_ALERT_WEBHOOK_URL` | optional alert webhook |
 
 Agent overrides:
@@ -274,7 +266,7 @@ Built-in roles are:
 - `auditor`
 - `admin`
 
-PocketID `groups` claims are mapped in `master.json`. If the RBAC group mapping is intentionally empty, SessionGuard preserves backwards compatibility and grants authenticated users the `admin` role; do not leave it empty in a multi-admin production environment.
+IdP `groups` claims (Caddy Sentinel: AD group CN names) are mapped in `master.json`. If the RBAC group mapping is intentionally empty, SessionGuard preserves backwards compatibility and grants authenticated users the `admin` role; do not leave it empty in a multi-admin production environment.
 
 See `docs/RBAC.md`.
 
@@ -295,7 +287,7 @@ If the profile backup fails, cleanup is not scheduled. If the user reconnects be
 
 Requirements:
 
-- Go 1.23+
+- Go 1.26+
 - Windows Server 2019/2022/2025 x64 for agent integration testing
 - Maven/JDK 11+ for the Guacamole extension
 - PostgreSQL 17 recommended for production
@@ -322,9 +314,11 @@ The current source tree contains unit tests for configuration, templates, profil
 - `docs/ARCHITECTURE.md` – components, state and trust boundaries
 - `docs/BROKER.md` – farms, resources, leases, scoring and maintenance states
 - `docs/DIRECTOR.md` – telemetry, history, processes, alerts and health scoring
-- `docs/GUACAMOLE.md` – extension and integration with Guacamole/PocketID
+- `docs/SENTINEL.md` – reference deployment with Caddy Sentinel (proxy + OIDC/AD login)
+- `docs/ACCESS-AUTH.md` – Guacamole ForwardAuth, revalidation, proxy secret, group sync
+- `docs/GUACAMOLE.md` – extension and integration with Guacamole
 - `docs/PROFILE-LIFECYCLE.md` – profile backup/restore/cleanup pipeline
-- `docs/RBAC.md` – roles and PocketID group mapping
+- `docs/RBAC.md` – roles and IdP group mapping
 - `docs/API.md` – HTTP API
 - `docs/OPERATIONS.md` – deployment, upgrade, backup and recovery
 - `docs/SECURITY.md` – security model and hardening
@@ -333,4 +327,4 @@ The current source tree contains unit tests for configuration, templates, profil
 
 ## Production-candidate status
 
-The design intentionally fails closed around destructive profile operations and broker farm boundaries. Nevertheless, v0.5.0 should be introduced as a canary before broad production rollout. In particular, validate native WTS behavior, SMB failure/recovery, PostgreSQL backup/restore, Guacamole extension loading and your exact PocketID group claims in your environment.
+The design intentionally fails closed around destructive profile operations and broker farm boundaries. Nevertheless, v0.5.0 should be introduced as a canary before broad production rollout. In particular, validate native WTS behavior, SMB failure/recovery, PostgreSQL backup/restore, Guacamole extension loading and your exact IdP group claims in your environment.

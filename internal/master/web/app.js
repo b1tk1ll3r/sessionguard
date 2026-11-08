@@ -1690,7 +1690,7 @@
         await api("/api/v1/access/identities/" + encodeURIComponent(user), { method: "DELETE" });
         SG.toast("Identitätsbindung freigegeben");
       } else if (act === "reset") {
-        if (!(await SG.confirm({ title: "Alle Identitätsbindungen zurücksetzen", message: "Löscht ALLE Identitätsbindungen und beendet alle Access-Sessions. Nur bei einem IdP-Wechsel (z. B. PocketID → Keycloak) sinnvoll.", confirm: "Alles zurücksetzen", danger: true, typeToConfirm: "RESET" }))) return;
+        if (!(await SG.confirm({ title: "Alle Identitätsbindungen zurücksetzen", message: "Löscht ALLE Identitätsbindungen und beendet alle Access-Sessions. Nur bei einem IdP-Wechsel (z. B. Pocket ID → Caddy Sentinel) sinnvoll.", confirm: "Alles zurücksetzen", danger: true, typeToConfirm: "RESET" }))) return;
         const r = await api("/api/v1/access/identities?confirm=all", { method: "DELETE" });
         SG.toast((r.released || 0) + " Bindungen zurückgesetzt");
       }

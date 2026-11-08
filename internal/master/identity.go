@@ -29,7 +29,7 @@ func (r authSessionStore) BindIdentity(username, subject, issuer string, now tim
 		if b.Subject != subject {
 			details := "username is bound to another OIDC subject"
 			if b.Issuer != "" && b.Issuer != issuer {
-				// Typical after an IdP migration (e.g. Pocket ID -> Keycloak).
+				// Typical after an IdP migration (e.g. Pocket ID -> Caddy Sentinel).
 				details = "username is bound to a subject of another issuer (" + b.Issuer + "); reset identity bindings after an IdP migration"
 			}
 			r.s.appendAuditLocked(model.AuditEntry{Time: now, Actor: "access-auth", Action: "identity_binding_conflict", Target: username, Result: "denied", Details: details})

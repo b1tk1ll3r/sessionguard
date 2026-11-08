@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>info.hilden.sessionguard</groupId>
   <artifactId>sessionguard-guacamole</artifactId>
-  <version>0.6.0</version>
+  <version>0.7.0</version>
   <packaging>jar</packaging>
   <properties>
     <maven.compiler.release>11</maven.compiler.release>
@@ -26,6 +26,18 @@
       <version>2.0.20</version>
       <scope>provided</scope>
     </dependency>
+    <dependency>
+      <groupId>javax.servlet</groupId>
+      <artifactId>javax.servlet-api</artifactId>
+      <version>3.1.0</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.13.4</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
   <build>
     <plugins>
@@ -34,6 +46,20 @@
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.16.0</version>
         <configuration><release>${maven.compiler.release}</release></configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.5.3</version>
+        <configuration>
+          <!-- the provider reads its configuration from the environment -->
+          <environmentVariables>
+            <SESSIONGUARD_MASTER_URL>http://127.0.0.1:9</SESSIONGUARD_MASTER_URL>
+            <SESSIONGUARD_BROKER_API_KEY>test-broker-key</SESSIONGUARD_BROKER_API_KEY>
+            <SESSIONGUARD_HEADER_LOGIN>true</SESSIONGUARD_HEADER_LOGIN>
+            <SESSIONGUARD_PROXY_SECRET>0123456789abcdef0123456789abcdef</SESSIONGUARD_PROXY_SECRET>
+          </environmentVariables>
+        </configuration>
       </plugin>
     </plugins>
   </build>

@@ -2,8 +2,10 @@ package info.hilden.sessionguard.guacamole;
 
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
@@ -35,7 +37,13 @@ import org.slf4j.LoggerFactory;
  * It does, however, veto every login that was not authenticated through the
  * SessionGuard identity header. Without this, the JDBC provider would still
  * accept username/password logins (e.g. the initdb default "guacadmin")
- * from anyone who passed ForwardAuth with any PocketID account.
+ * from anyone who passed ForwardAuth with any IdP account.
+ *
+ * With SESSIONGUARD_PROXY_SECRET set, identity headers are only trusted on
+ * requests that also carry that secret in SESSIONGUARD_PROXY_SECRET_HEADER
+ * (default X-SessionGuard-Proxy-Auth). The reverse proxy sets it after
+ * ForwardAuth, so a client that reaches Guacamole directly – bypassing the
+ * proxy – cannot log in as anybody by sending X-Guacamole-User itself.
  */
 public final class SessionGuardAuthenticationProvider extends AbstractAuthenticationProvider {
 
@@ -53,6 +61,10 @@ public final class SessionGuardAuthenticationProvider extends AbstractAuthentica
 
     private final String groupsHeader = env("SESSIONGUARD_GROUPS_HEADER", "X-Guacamole-Groups");
 
+    private final String proxySecretHeader = env("SESSIONGUARD_PROXY_SECRET_HEADER", "X-SessionGuard-Proxy-Auth");
+
+    private final byte[] proxySecret = proxySecretFromEnvironment();
+
     private final Set<String> allowedProviders = Collections.unmodifiableSet(
             Arrays.stream(env("SESSIONGUARD_ALLOWED_AUTH_PROVIDERS", "header,sessionguard-broker").split(","))
                     .map(String::trim).filter(s -> !s.isEmpty())
@@ -63,9 +75,50 @@ public final class SessionGuardAuthenticationProvider extends AbstractAuthentica
         return "sessionguard-broker";
     }
 
+    private static byte[] proxySecretFromEnvironment() {
+        String v = System.getenv("SESSIONGUARD_PROXY_SECRET");
+        if (v == null || v.isBlank()) {
+            logger.warn("SESSIONGUARD_PROXY_SECRET is not set: identity headers are trusted from every client that "
+                    + "reaches Guacamole. Make sure Guacamole is reachable only through the reverse proxy.");
+            return null;
+        }
+        v = v.trim();
+        if (v.length() < 24) {
+            throw new IllegalStateException("SESSIONGUARD_PROXY_SECRET must be at least 24 characters");
+        }
+        return v.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Reports whether the request came through the trusted reverse proxy.
+     * Without a configured secret every request is accepted (previous
+     * behavior; the proxy must then be the only network path).
+     */
+    boolean fromTrustedProxy(Credentials credentials) {
+        return secretMatches(proxySecret, credentials == null ? null : credentials.getHeader(proxySecretHeader));
+    }
+
+    /** Constant-time comparison; a null secret means "not configured". */
+    static boolean secretMatches(byte[] secret, String got) {
+        if (secret == null) {
+            return true;
+        }
+        if (got == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(secret, got.trim().getBytes(StandardCharsets.UTF_8));
+    }
+
     @Override
     public AuthenticatedUser authenticateUser(Credentials credentials) throws GuacamoleException {
         if (!headerLogin || credentials == null) {
+            return null;
+        }
+        if (!fromTrustedProxy(credentials)) {
+            if (credentials.getHeader(identityHeader) != null) {
+                logger.warn("SessionGuard ignored identity header from a request without valid proxy secret ({}).",
+                        credentials.getRemoteAddress());
+            }
             return null;
         }
         String username = trimmed(credentials.getHeader(identityHeader));
@@ -83,9 +136,14 @@ public final class SessionGuardAuthenticationProvider extends AbstractAuthentica
         if (!(authenticatedUser instanceof SessionGuardUser) || credentials == null) {
             return authenticatedUser;
         }
-        String username = trimmed(credentials.getHeader(identityHeader));
+        String username = fromTrustedProxy(credentials) ? trimmed(credentials.getHeader(identityHeader)) : null;
         if (username == null) {
-            return authenticatedUser;
+            // Fail closed: a request with a Guacamole token but without a
+            // valid SessionGuard identity did not pass ForwardAuth (expired or
+            // revoked access session, or a client bypassing the proxy).
+            logger.warn("SessionGuard identity missing for \"{}\"; invalidating Guacamole session.",
+                    authenticatedUser.getIdentifier());
+            throw new GuacamoleInvalidCredentialsException("SessionGuard identity missing.", CredentialsInfo.EMPTY);
         }
         // The browser kept a Guacamole token, but the SessionGuard access
         // session now belongs to someone else: never continue as the old user.
@@ -144,7 +202,7 @@ public final class SessionGuardAuthenticationProvider extends AbstractAuthentica
             String provider = authenticatedUser.getAuthenticationProvider() == null ? ""
                     : authenticatedUser.getAuthenticationProvider().getIdentifier();
             Credentials credentials = authenticatedUser.getCredentials();
-            String header = credentials == null ? null : credentials.getHeader(identityHeader);
+            String header = credentials == null || !fromTrustedProxy(credentials) ? null : credentials.getHeader(identityHeader);
             boolean viaHeader = provider != null && allowedProviders.contains(provider.toLowerCase(Locale.ROOT));
             boolean headerMatches = header != null && header.trim().equalsIgnoreCase(authenticatedUser.getIdentifier());
             if (!viaHeader || !headerMatches) {
@@ -169,9 +227,28 @@ public final class SessionGuardAuthenticationProvider extends AbstractAuthentica
         return new TokenInjectingUserContext(context) {
             @Override
             protected Map<String, String> getTokens(Connection connection) throws GuacamoleException {
-                return broker.resolve(username, connection.getIdentifier(), connection.getName());
+                return brokerTokens(broker.resolve(username, connection.getIdentifier(), connection.getName()));
             }
         };
+    }
+
+    /**
+     * Keeps only SESSIONGUARD_* tokens from the broker answer, so a broker
+     * response can never override Guacamole's own tokens such as
+     * GUAC_USERNAME or GUAC_PASSWORD.
+     */
+    static Map<String, String> brokerTokens(Map<String, String> in) {
+        Map<String, String> out = new HashMap<>();
+        if (in == null) {
+            return out;
+        }
+        for (Map.Entry<String, String> e : in.entrySet()) {
+            String k = e.getKey();
+            if (k != null && k.matches("SESSIONGUARD_[A-Z0-9_]{1,64}") && e.getValue() != null) {
+                out.put(k, e.getValue());
+            }
+        }
+        return out;
     }
 
     private static String env(String name, String fallback) {

@@ -1,0 +1,47 @@
+# Optional: two more Guacamole workers for larger farms (about 80–100
+# concurrent sessions per worker). All workers share the same Guacamole
+# database, so users, connections and permissions exist only once.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.workers.yml up -d
+#
+# In the Caddyfile list all workers in reverse_proxy and keep the sticky
+# cookie (see Caddyfile.sentinel): Guacamole keeps tunnel state per process.
+
+services:
+  guacd-2:
+    extends:
+      file: docker-compose.yml
+      service: guacd
+
+  guacamole-2:
+    extends:
+      file: docker-compose.yml
+      service: guacamole
+    environment:
+      GUACD_HOSTNAME: guacd-2
+    depends_on:
+      guacamole-postgres:
+        condition: service_healthy
+      guacd-2:
+        condition: service_started
+    ports: !override
+      - "127.0.0.1:${GUACAMOLE_PORT_2:-8082}:8080"
+
+  guacd-3:
+    extends:
+      file: docker-compose.yml
+      service: guacd
+
+  guacamole-3:
+    extends:
+      file: docker-compose.yml
+      service: guacamole
+    environment:
+      GUACD_HOSTNAME: guacd-3
+    depends_on:
+      guacamole-postgres:
+        condition: service_healthy
+      guacd-3:
+        condition: service_started
+    ports: !override
+      - "127.0.0.1:${GUACAMOLE_PORT_3:-8083}:8080"

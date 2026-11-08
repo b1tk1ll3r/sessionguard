@@ -1,17 +1,18 @@
 -- SessionGuard hardening for the shared Guacamole PostgreSQL database.
 --
---  * makes :admin_user (the Guacamole/PocketID username of a real admin) a
+--  * makes :admin_user (the IdP username of a real admin, e.g. the
+--    sAMAccountName Caddy Sentinel reports as preferred_username) a
 --    Guacamole system administrator, creating the account if needed;
 --  * deletes the initdb default account "guacadmin" (default password
 --    "guacadmin"), including all of its permissions (ON DELETE CASCADE).
 --
 -- Existing installation:
 --   docker exec -i guacamole-postgres psql -U guacamole_user -d guacamole_db \
---     -v ON_ERROR_STOP=1 -v admin_user=YOUR_POCKETID_USERNAME \
---     < production/guacamole/harden-guacamole-db.sql
+--     -v ON_ERROR_STOP=1 -v admin_user=YOUR_IDP_USERNAME \
+--     < deploy/guacamole/harden-guacamole-db.sql
 --
 -- New installations run this automatically via guac-init when
--- GUAC_ADMIN_USER is set (see production/sessionguard/docker-compose.yml).
+-- GUAC_ADMIN_USER is set (see deploy/docker-compose.yml).
 --
 -- The script is idempotent and aborts without changes if admin_user is
 -- missing or equals guacadmin.

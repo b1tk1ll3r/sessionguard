@@ -37,13 +37,16 @@ type pending struct {
 // Only the SHA-256 of the cookie value is used as map key, so a memory dump of
 // the map does not yield usable cookies.
 type adminSession struct {
-	ID       string
-	User     User
-	SID      string
-	IDToken  string
-	Created  time.Time
-	LastSeen time.Time
-	Exp      time.Time
+	ID      string
+	User    User
+	SID     string
+	IDToken string
+	// RefreshToken/Validated: oidc.revalidate_minutes.
+	RefreshToken string
+	Validated    time.Time
+	Created      time.Time
+	LastSeen     time.Time
+	Exp          time.Time
 }
 
 // SessionInfo is the public view of an admin console session.
@@ -75,6 +78,7 @@ type Manager struct {
 	pending    map[string]pending
 	sessions   map[string]adminSession
 	logoutSeen map[string]time.Time
+	reval      *revalidator
 }
 
 func New(ctx context.Context, cfg model.OIDCConfig) (*Manager, error) {
@@ -89,12 +93,15 @@ func New(ctx context.Context, cfg model.OIDCConfig) (*Manager, error) {
 		EndSessionEndpoint string `json:"end_session_endpoint"`
 	}
 	_ = p.Claims(&discovery)
+	oauthCfg := oauth2.Config{ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, Endpoint: p.Endpoint(), RedirectURL: cfg.RedirectURL, Scopes: withOfflineAccess(scopesOrDefault(cfg.Scopes), cfg.RevalidateMinutes > 0)}
+	verifier := p.Verifier(&oidc.Config{ClientID: cfg.ClientID})
 	return &Manager{
 		cfg:        cfg,
 		provider:   p,
-		verifier:   p.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
+		verifier:   verifier,
 		logoutVer:  p.Verifier(&oidc.Config{ClientID: cfg.ClientID, SkipExpiryCheck: true}),
-		oauth:      oauth2.Config{ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, Endpoint: p.Endpoint(), RedirectURL: cfg.RedirectURL, Scopes: scopesOrDefault(cfg.Scopes)},
+		oauth:      oauthCfg,
+		reval:      newRevalidator(cfg.RevalidateMinutes, oauthCfg, verifier, nil),
 		endSession: discovery.EndSessionEndpoint,
 		pending:    map[string]pending{},
 		sessions:   map[string]adminSession{},
@@ -183,11 +190,17 @@ func (m *Manager) Callback(w http.ResponseWriter, r *http.Request) error {
 	if !m.allowed(u) {
 		return errors.New("user is not in an allowed admin group")
 	}
+	rt := ""
+	if m.reval != nil {
+		if rt = tok.RefreshToken; strings.TrimSpace(rt) == "" {
+			return errors.New("IdP issued no refresh token although oidc.revalidate_minutes is set (enable refresh tokens / offline_access for this client)")
+		}
+	}
 	value := randomURLSafe(32)
 	m.mu.Lock()
 	m.pruneLocked(now)
 	evictOnePendingIfFull(m.sessions)
-	m.sessions[hashAccessToken(value)] = adminSession{ID: randomURLSafe(12), User: u, SID: claims.SID, IDToken: raw, Created: now, LastSeen: now, Exp: exp}
+	m.sessions[hashAccessToken(value)] = adminSession{ID: randomURLSafe(12), User: u, SID: claims.SID, IDToken: raw, RefreshToken: rt, Validated: now, Created: now, LastSeen: now, Exp: exp}
 	m.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: "sg_session", Value: value, Path: "/", HttpOnly: true, Secure: m.cfg.SecureCookie, SameSite: http.SameSiteLaxMode, MaxAge: int(m.sessionLifetime().Seconds())})
 	return nil
@@ -241,7 +254,7 @@ func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 // BackchannelLogout implements OIDC Back-Channel Logout for the admin
-// console: Pocket ID can end all console sessions of a user (or IdP session)
+// console: the IdP can end all console sessions of a user (or IdP session)
 // immediately, e.g. after the user was disabled.
 func (m *Manager) BackchannelLogout(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
@@ -375,10 +388,74 @@ func (m *Manager) Require(next http.Handler) http.Handler {
 			return
 		}
 		u, ok := m.session(c.Value)
+		if ok && m.reval != nil {
+			u, ok = m.revalidate(r.Context(), hashAccessToken(c.Value))
+		}
 		if !ok {
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))
 	})
+}
+
+// revalidate renews a due admin session at the IdP (oidc.revalidate_minutes).
+// A refused refresh or groups that are no longer admitted end the session;
+// an unreachable IdP is tolerated up to twice the interval.
+func (m *Manager) revalidate(ctx context.Context, key string) (User, bool) {
+	m.mu.Lock()
+	s, ok := m.sessions[key]
+	m.mu.Unlock()
+	if !ok {
+		return User{}, false
+	}
+	now := time.Now().UTC()
+	if !m.reval.due(s.Validated, now) {
+		return s.User, true
+	}
+	if !m.reval.acquire(key) {
+		return s.User, m.reval.grace(s.Validated, now)
+	}
+	var err error
+	defer func() { m.reval.release(key, err) }()
+	// re-read: a concurrent request may have rotated the refresh token
+	m.mu.Lock()
+	s, ok = m.sessions[key]
+	m.mu.Unlock()
+	if !ok {
+		return User{}, false
+	}
+	if !m.reval.due(s.Validated, time.Now()) {
+		return s.User, true
+	}
+	var res refreshResult
+	res, err = m.reval.exchange(ctx, s.RefreshToken, s.User.Sub)
+	if errors.Is(err, errRefreshUnavailable) {
+		return s.User, m.reval.grace(s.Validated, time.Now())
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err == nil {
+		u := s.User
+		u.Groups = GroupsFromClaims(res.Claims, m.cfg.GroupsClaims)
+		if v := claimString(res.Claims, "email"); v != "" {
+			u.Email = v
+		}
+		if v := claimString(res.Claims, "name"); v != "" {
+			u.Name = v
+		}
+		if m.allowed(u) {
+			if cur, still := m.sessions[key]; still {
+				cur.User, cur.IDToken, cur.RefreshToken, cur.Validated = u, res.IDToken, res.RefreshToken, time.Now().UTC()
+				m.sessions[key] = cur
+				return u, true
+			}
+			return User{}, false
+		}
+		err = errSessionEnded
+		log.Printf("admin session of %q ended: no longer in an allowed admin group", s.User.Sub)
+	}
+	delete(m.sessions, key)
+	log.Printf("admin session %s ended by revalidation", s.ID)
+	return User{}, false
 }

@@ -2,14 +2,14 @@
 
 ## Design
 
-The SessionGuard Guacamole extension is deliberately **not** an authentication provider in the identity sense. PocketID/header authentication stays responsible for user identity.
+The SessionGuard Guacamole extension is deliberately **not** an authentication provider in the identity sense. The OIDC provider (e.g. Caddy Sentinel) and SessionGuard access auth stay responsible for user identity.
 
 The extension subclasses Guacamole's authentication-provider extension point only to decorate the authenticated `UserContext` with a `TokenInjectingUserContext`. At connection time it sends the current Guacamole username plus connection identity to the SessionGuard broker and injects returned tokens.
 
 This avoids:
 
 - writing dynamic hostnames directly into the Guacamole PostgreSQL database;
-- reimplementing PocketID authentication in SessionGuard;
+- reimplementing IdP authentication in SessionGuard;
 - opening a management connection from Master to RDS hosts.
 
 ## Build
@@ -86,7 +86,7 @@ Recommended topology:
 ```text
 Internet
    |
-Traefik + forward-auth/header scrubber
+Reverse proxy (Caddy Sentinel) + SessionGuard forward_auth + proxy secret
    |
 dedicated trusted Guacamole proxy network
    |
@@ -96,11 +96,11 @@ Guacamole
    +--- private control ---> SessionGuard Master
 ```
 
-Do not rely solely on the fact that the public Traefik router strips inbound identity headers if arbitrary unrelated containers can directly connect to Guacamole's port on a shared Docker network.
+Do not rely solely on the fact that the proxy strips inbound identity headers if arbitrary processes or containers can connect to Guacamole's port directly. Set `SESSIONGUARD_PROXY_SECRET`: the extension then trusts identity headers only together with the secret the proxy adds (see `docs/ACCESS-AUTH.md`).
 
 ## Integration with the supplied compose
 
-Your existing PocketID → traefik-forward-auth → Guacamole chain can remain unchanged. The required additions are:
+`deploy/docker-compose.yml` contains the complete stack (Master, Guacamole, guacd, databases). When integrating into an existing Guacamole stack instead, the required additions are:
 
 1. build Guacamole using `deploy/guacamole/Dockerfile.guacamole`;
 2. add the three `SESSIONGUARD_*` variables above;
@@ -108,7 +108,7 @@ Your existing PocketID → traefik-forward-auth → Guacamole chain can remain u
 4. add SessionGuard Published Resources matching your Guacamole connections;
 5. replace fixed RDP hostnames in brokered connections with `${SESSIONGUARD_HOST}`.
 
-`deploy/guacamole/docker-compose.sessionguard.example.yml` provides a focused example rather than replacing your complete existing stack.
+See `deploy/docker-compose.yml` for the environment of the `guacamole` service.
 
 ## Failure behavior
 

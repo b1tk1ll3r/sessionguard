@@ -24,7 +24,7 @@ import (
 	"github.com/example/sessionguard/internal/webui"
 )
 
-const Version = "0.6.0"
+const Version = "0.7.0"
 
 type App struct {
 	cfg    config.Master
@@ -1755,7 +1755,7 @@ func sessionMatchesUser(s model.Session, key string) bool {
 	if s.Domain != "" && normalizeUser(s.User+"@"+s.Domain) == key {
 		return true
 	}
-	// PocketID preferred_username is often a UPN while WTS exposes a NetBIOS
+	// The IdP preferred_username is often a UPN while WTS exposes a NetBIOS
 	// domain. In that case the UPN suffix cannot be reliably derived from WTS;
 	// permit local-part matching for UPNs, but retain strict matching above for
 	// explicit DOMAIN\user values.

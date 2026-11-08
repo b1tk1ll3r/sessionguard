@@ -5,3 +5,7 @@ state.json
 master.json
 configs/agent.json
 deploy/master.json
+deploy/.env
+deploy/ca/*.pem
+deploy/ca/*.crt
+guacamole-extension/target/

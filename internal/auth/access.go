@@ -38,8 +38,8 @@ type AccessSessionStore interface {
 // OIDC subject (or the subject to a different username).
 var ErrIdentityConflict = errors.New("identity is bound to a different account")
 
-// DefaultUsernamePattern accepts Pocket ID style usernames and rejects
-// Unicode look-alikes, whitespace and control characters.
+// DefaultUsernamePattern accepts typical IdP usernames (sAMAccountName, UPN)
+// and rejects Unicode look-alikes, whitespace and control characters.
 const DefaultUsernamePattern = `^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`
 
 type accessPending struct {
@@ -63,6 +63,8 @@ type AccessManager struct {
 	usernameRE *regexp.Regexp
 	// lastCleanup throttles expired-session cleanup triggered by logins.
 	lastCleanup time.Time
+	// reval renews sessions at the IdP (access_auth.revalidate_minutes).
+	reval *revalidator
 }
 
 // maxPendingLogins bounds unauthenticated login state. When full, an
@@ -103,20 +105,23 @@ func NewAccess(ctx context.Context, cfg model.AccessAuthConfig, sessions AccessS
 	if err != nil {
 		return nil, err
 	}
+	oauthCfg := oauth2.Config{
+		ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
+		Endpoint: p.Endpoint(), RedirectURL: cfg.RedirectURL,
+		Scopes: withOfflineAccess(scopesOrDefault(cfg.Scopes), cfg.RevalidateMinutes > 0),
+	}
+	verifier := p.Verifier(&oidc.Config{ClientID: cfg.ClientID})
 	return &AccessManager{
 		usernameRE: re,
 		cfg:        cfg,
 		provider:   p,
-		verifier:   p.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
+		verifier:   verifier,
 		// Back-channel logout tokens are not ID tokens and may omit exp. We
 		// still verify issuer, audience and signature, then validate the
 		// logout-specific claims below.
-		logoutVer: p.Verifier(&oidc.Config{ClientID: cfg.ClientID, SkipExpiryCheck: true}),
-		oauth: oauth2.Config{
-			ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
-			Endpoint: p.Endpoint(), RedirectURL: cfg.RedirectURL,
-			Scopes: scopesOrDefault(cfg.Scopes),
-		},
+		logoutVer:  p.Verifier(&oidc.Config{ClientID: cfg.ClientID, SkipExpiryCheck: true}),
+		oauth:      oauthCfg,
+		reval:      newRevalidator(cfg.RevalidateMinutes, oauthCfg, verifier, nil),
 		sessions:   sessions,
 		endSession: discovery.EndSessionEndpoint,
 		pending:    map[string]accessPending{},
@@ -219,12 +224,15 @@ func (m *AccessManager) Callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid OIDC claims", http.StatusUnauthorized)
 		return
 	}
-	username := claimString(claims, m.cfg.UsernameClaim)
-	if username == "" {
-		// Pocket ID documents preferred_username and it is a safer Guacamole
-		// identity than display-name. Never invent a fallback identity.
-		username = claimString(claims, "preferred_username")
+	if m.reval != nil && strings.TrimSpace(tok.RefreshToken) == "" {
+		// Revalidation is the only way this session can learn that access
+		// ended at the IdP; without a refresh token it would silently run
+		// until its absolute expiry.
+		log.Printf("access login denied for subject %q: IdP issued no refresh token although access_auth.revalidate_minutes is set (enable refresh tokens / offline_access for this client)", idToken.Subject)
+		http.Error(w, "login is not possible: the identity provider issued no refresh token; please contact your administrator", http.StatusForbidden)
+		return
 	}
+	username := m.usernameFrom(claims)
 	if username == "" {
 		http.Error(w, "OIDC token has no usable username claim", http.StatusForbidden)
 		return
@@ -254,8 +262,12 @@ func (m *AccessManager) Callback(w http.ResponseWriter, r *http.Request) {
 		ID: randomAccessToken(12), TokenHash: hashAccessToken(browserToken), Subject: idToken.Subject,
 		SID: claimString(claims, "sid"), Username: username,
 		Email: claimString(claims, "email"), Name: claimString(claims, "name"),
-		Groups: groups, IDToken: rawIDToken, CreatedAt: now,
+		Groups: groups, IDToken: rawIDToken, RefreshToken: tok.RefreshToken,
+		ValidatedAt: now, CreatedAt: now,
 		ExpiresAt: now.Add(time.Duration(m.cfg.SessionHours) * time.Hour),
+	}
+	if m.reval == nil {
+		sess.RefreshToken = ""
 	}
 	if err := m.sessions.PutAuthSession(sess); err != nil {
 		http.Error(w, "could not create access session", http.StatusInternalServerError)
@@ -272,7 +284,8 @@ func (m *AccessManager) Verify(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, m.loginURL(target), http.StatusFound)
 		return
 	}
-	// These are the only identity headers Traefik should copy to Guacamole.
+	// These are the only identity headers the proxy (Caddy forward_auth
+	// copy_headers) should copy to Guacamole.
 	// authResponseHeaders replaces conflicting client-provided values.
 	w.Header().Set("X-Guacamole-User", sess.Username)
 	w.Header().Set("X-SessionGuard-User", sess.Username)
@@ -309,8 +322,10 @@ func (m *AccessManager) Status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *AccessManager) Logout(w http.ResponseWriter, r *http.Request) {
-	sess, _ := m.sessionFromRequest(r)
-	if c, err := r.Cookie(m.cfg.CookieName); err == nil {
+	// No revalidation here: logging out must not depend on the IdP.
+	var sess model.AuthSession
+	if c, err := r.Cookie(m.cfg.CookieName); err == nil && strings.TrimSpace(c.Value) != "" {
+		sess, _ = m.sessions.GetAuthSession(hashAccessToken(c.Value))
 		_ = m.sessions.DeleteAuthSession(hashAccessToken(c.Value))
 	}
 	clearCookie(w, m.cfg.CookieName, m.cfg.CookieDomain, "/", m.cfg.SecureCookie)
@@ -392,7 +407,79 @@ func (m *AccessManager) sessionFromRequest(r *http.Request) (model.AuthSession, 
 	if !ok || m.checkUsername(sess.Username) != nil {
 		return model.AuthSession{}, false
 	}
+	if m.reval.due(sess.ValidatedAt, time.Now()) {
+		return m.revalidate(r.Context(), sess)
+	}
 	return sess, true
+}
+
+// usernameFrom returns the Guacamole identity of a claim set. Never invent a
+// fallback identity: preferred_username is a safer identity than a display
+// name or an e-mail address the user may be able to change.
+func (m *AccessManager) usernameFrom(claims map[string]any) string {
+	if u := claimString(claims, m.cfg.UsernameClaim); u != "" {
+		return u
+	}
+	return claimString(claims, "preferred_username")
+}
+
+// revalidate renews a due session at the IdP. A refused refresh ends the
+// session; an unreachable IdP is tolerated up to twice the interval.
+func (m *AccessManager) revalidate(ctx context.Context, sess model.AuthSession) (model.AuthSession, bool) {
+	key := sess.TokenHash
+	if !m.reval.acquire(key) {
+		return sess, m.reval.grace(sess.ValidatedAt, time.Now())
+	}
+	var err error
+	defer func() { m.reval.release(key, err) }()
+	// Another request may have renewed the session (and rotated its refresh
+	// token) since it was read: always continue with the stored state.
+	cur, ok := m.sessions.GetAuthSession(key)
+	if !ok {
+		err = errSessionEnded
+		return model.AuthSession{}, false
+	}
+	if !m.reval.due(cur.ValidatedAt, time.Now()) {
+		return cur, true
+	}
+	var res refreshResult
+	res, err = m.reval.exchange(ctx, cur.RefreshToken, cur.Subject)
+	if errors.Is(err, errRefreshUnavailable) {
+		return cur, m.reval.grace(cur.ValidatedAt, time.Now())
+	}
+	if err == nil {
+		username := m.usernameFrom(res.Claims)
+		groups := GroupsFromClaims(res.Claims, m.cfg.GroupsClaims)
+		switch {
+		case !strings.EqualFold(username, cur.Username):
+			log.Printf("access session of %q ended: IdP now reports username %q", cur.Username, username)
+			err = errSessionEnded
+		case !allowedGroups(groups, m.cfg.AllowedGroups):
+			log.Printf("access session of %q ended: no longer in an allowed access group", cur.Username)
+			err = errSessionEnded
+		default:
+			cur.Groups = groups
+			if v := claimString(res.Claims, "email"); v != "" {
+				cur.Email = v
+			}
+			if v := claimString(res.Claims, "name"); v != "" {
+				cur.Name = v
+			}
+			if v := claimString(res.Claims, "sid"); v != "" {
+				cur.SID = v
+			}
+			cur.IDToken, cur.RefreshToken, cur.ValidatedAt = res.IDToken, res.RefreshToken, time.Now().UTC()
+			if perr := m.sessions.PutAuthSession(cur); perr != nil {
+				// The rotated refresh token is lost; the next refresh will be
+				// refused and end the session – fail closed, not open.
+				log.Printf("access session of %q: could not persist revalidation: %v", cur.Username, perr)
+			}
+			return cur, true
+		}
+	}
+	log.Printf("access session %s of %q ended by revalidation", cur.ID, cur.Username)
+	_ = m.sessions.DeleteAuthSession(key)
+	return model.AuthSession{}, false
 }
 
 func (m *AccessManager) setSessionCookie(w http.ResponseWriter, token string, maxAge int) {
@@ -429,7 +516,7 @@ func (m *AccessManager) externalCallbackPath() string {
 
 func (m *AccessManager) loginURL(target string) string {
 	u, _ := url.Parse(m.cfg.RedirectURL)
-	// Preserve an external Traefik prefix such as /_sessionguard. The Master
+	// Preserve an external proxy prefix such as /_sessionguard. The Master
 	// itself sees /auth/* after StripPrefix, while the browser must be sent to
 	// the externally routable prefixed URL.
 	base := strings.TrimSuffix(u.Path, "/oidc/callback")

@@ -1,61 +1,187 @@
+# SessionGuard reference stack for Caddy Sentinel (docs/SENTINEL.md)
+#
+#   Internet ──► Caddy Sentinel (host, :443)
+#                  ├─ sso.example.org        → Sentinel OIDC server (AD/LDAP login)
+#                  ├─ sessionguard.example.org → 127.0.0.1:8080  sessionguard-master
+#                  └─ rds.example.org         → forward_auth → 127.0.0.1:8081 guacamole
+#
+# Every published port is bound to 127.0.0.1: only the host (Caddy Sentinel)
+# reaches the stack. Databases and guacd have no published port at all.
+#
+#   cp .env.example .env && cp master.json.example master.json   # fill in
+#   docker compose up -d
+#
+# Further Guacamole workers: docker-compose.workers.yml.
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+
 services:
   sessionguard-postgres:
+    <<: *hardening
     image: postgres:${POSTGRES_VERSION:-17}
-    restart: unless-stopped
     environment:
       POSTGRES_DB: ${SESSIONGUARD_DB_NAME:-sessionguard}
       POSTGRES_USER: ${SESSIONGUARD_DB_USER:-sessionguard}
       POSTGRES_PASSWORD: ${SESSIONGUARD_DB_PASSWORD:?SESSIONGUARD_DB_PASSWORD is required}
     volumes:
       - sessionguard-postgres:/var/lib/postgresql/data
+    networks: [backend]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 20
-    networks: [sessionguard_backend]
 
   sessionguard-master:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    restart: unless-stopped
+    <<: *hardening
+    image: ${SESSIONGUARD_IMAGE:?SESSIONGUARD_IMAGE is required}
     depends_on:
       sessionguard-postgres:
         condition: service_healthy
     read_only: true
-    security_opt:
-      - no-new-privileges:true
     cap_drop: [ALL]
     environment:
       SESSIONGUARD_DATABASE_URL: postgres://${SESSIONGUARD_DB_USER:-sessionguard}:${SESSIONGUARD_DB_PASSWORD}@sessionguard-postgres:5432/${SESSIONGUARD_DB_NAME:-sessionguard}?sslmode=disable
       SESSIONGUARD_ENROLLMENT_TOKEN: ${SESSIONGUARD_ENROLLMENT_TOKEN:?SESSIONGUARD_ENROLLMENT_TOKEN is required}
       SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY:?SESSIONGUARD_BROKER_API_KEY is required}
       SESSIONGUARD_OIDC_CLIENT_SECRET: ${SESSIONGUARD_OIDC_CLIENT_SECRET:?SESSIONGUARD_OIDC_CLIENT_SECRET is required}
-      SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET: ${SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET:-}
+      SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET: ${SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET:?SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET is required}
       SESSIONGUARD_ALERT_WEBHOOK_URL: ${SESSIONGUARD_ALERT_WEBHOOK_URL:-}
+      # System CAs plus the CA of Caddy Sentinel's internal PKI (if the
+      # issuer certificate comes from there): put its root as PEM into ./ca/.
+      SSL_CERT_DIR: /etc/ssl/certs:/etc/sessionguard/ca
+    extra_hosts:
+      # The Master talks to the OIDC issuer (discovery, token, JWKS). When the
+      # issuer name does not resolve to the host from inside Docker, map it to
+      # the host, where Caddy Sentinel listens.
+      - "${SENTINEL_ISSUER_HOST:-sso.invalid}:host-gateway"
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${SESSIONGUARD_MASTER_PORT:-8080}:8080"
     volumes:
       - ./master.json:/etc/sessionguard/master.json:ro
+      - ./ca:/etc/sessionguard/ca:ro
     tmpfs:
       - /tmp:size=16m,mode=1777
+    networks: [backend, egress]
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
-    networks:
-      - sessionguard_backend
-      - proxy
+
+  # Generates the official Guacamole PostgreSQL schema once. The SessionGuard
+  # hardening replaces the initdb default "guacadmin" (password "guacadmin")
+  # by GUAC_ADMIN_USER. Like all initdb scripts it only runs on the very first
+  # database start; for existing databases run
+  # guacamole/harden-guacamole-db.sql manually.
+  guac-init:
+    image: guacamole/guacamole:${GUACAMOLE_VERSION:-1.6.0}
+    restart: "no"
+    network_mode: none
+    environment:
+      GUAC_ADMIN_USER: ${GUAC_ADMIN_USER:?GUAC_ADMIN_USER (IdP username of the first Guacamole admin) is required}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        /opt/guacamole/bin/initdb.sh --postgresql > /initdb/001-guacamole.sql
+        test -s /initdb/001-guacamole.sql
+        case "$$GUAC_ADMIN_USER" in
+          ""|guacadmin|*[!A-Za-z0-9._@-]*) echo "invalid GUAC_ADMIN_USER" >&2; exit 1 ;;
+        esac
+        sed "s/:'admin_user'/'$$GUAC_ADMIN_USER'/g" /sessionguard/harden-guacamole-db.sql > /initdb/002-sessionguard-hardening.sql
+    volumes:
+      - guac-init:/initdb
+      - ./guacamole/harden-guacamole-db.sql:/sessionguard/harden-guacamole-db.sql:ro
+
+  guacamole-postgres:
+    <<: *hardening
+    image: postgres:${POSTGRES_VERSION:-17}
+    depends_on:
+      guac-init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: ${GUAC_DB_NAME:-guacamole_db}
+      POSTGRES_USER: ${GUAC_DB_USER:-guacamole_user}
+      POSTGRES_PASSWORD: ${GUAC_DB_PASSWORD:?GUAC_DB_PASSWORD is required}
+    volumes:
+      - guacamole-postgres:/var/lib/postgresql/data
+      - guac-init:/docker-entrypoint-initdb.d:ro
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # guacd has no authentication: never publish its port. It needs the egress
+  # network to open RDP connections to the session hosts.
+  guacd:
+    <<: *hardening
+    image: guacamole/guacd:${GUACAMOLE_VERSION:-1.6.0}
+    environment:
+      LOG_LEVEL: ${GUACD_LOG_LEVEL:-info}
+    networks: [backend, egress]
+    volumes:
+      - drive:/drive
+
+  guacamole:
+    <<: *hardening
+    # Stock Guacamole plus the SessionGuard extension (deploy/guacamole/Dockerfile.guacamole).
+    image: ${SESSIONGUARD_GUAC_IMAGE:?SESSIONGUARD_GUAC_IMAGE is required}
+    depends_on:
+      guacamole-postgres:
+        condition: service_healthy
+      guacd:
+        condition: service_started
+    environment: &guacamole-env
+      WEBAPP_CONTEXT: ROOT
+      GUACD_HOSTNAME: guacd
+      GUACD_PORT: "4822"
+
+      # SessionGuard broker over the internal Docker network
+      SESSIONGUARD_MASTER_URL: http://sessionguard-master:8080
+      SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY}
+      SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
+
+      POSTGRESQL_ENABLED: "true"
+      POSTGRESQL_HOSTNAME: guacamole-postgres
+      POSTGRESQL_PORT: "5432"
+      POSTGRESQL_DATABASE: ${GUAC_DB_NAME:-guacamole_db}
+      POSTGRESQL_USERNAME: ${GUAC_DB_USER:-guacamole_user}
+      POSTGRESQL_PASSWORD: ${GUAC_DB_PASSWORD}
+      POSTGRESQL_AUTO_CREATE_ACCOUNTS: "true"
+
+      # No OIDC in Guacamole: Caddy Sentinel calls SessionGuard forward_auth
+      # and passes the verified identity as X-Guacamole-User/-Groups.
+      HTTP_AUTH_ENABLED: "true"
+      HTTP_AUTH_HEADER: X-Guacamole-User
+      SESSIONGUARD_HEADER_LOGIN: "true"
+      EXTENSION_PRIORITY: sessionguard-broker
+      # Identity headers count only together with this secret, which Caddy
+      # adds after forward_auth. Same value as in Caddy's environment.
+      SESSIONGUARD_PROXY_SECRET: ${SESSIONGUARD_PROXY_SECRET:?SESSIONGUARD_PROXY_SECRET is required}
+      REMOTE_IP_VALVE_ENABLED: "true"
+    ports:
+      - "127.0.0.1:${GUACAMOLE_PORT:-8081}:8080"
+    networks: [backend, egress]
+    volumes:
+      - drive:/drive
 
 networks:
-  sessionguard_backend:
+  # Databases, broker API and guacd: no route out of Docker.
+  backend:
     internal: true
-  proxy:
-    external: true
-    name: ${TRAEFIK_NETWORK:-aio_proxy}
+  # Published ports, OIDC issuer, alert webhook, RDP to the session hosts.
+  egress: {}
 
 volumes:
   sessionguard-postgres:
+  guacamole-postgres:
+  guac-init:
+  drive:

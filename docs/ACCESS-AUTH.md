@@ -1,204 +1,166 @@
 # SessionGuard Access Auth (Guacamole ForwardAuth)
 
-SessionGuard 0.5.0 can protect Apache Guacamole directly through Traefik ForwardAuth. The feature lives inside `sessionguard-master`; no separate authentication container is required.
+SessionGuard protects Apache Guacamole through the ForwardAuth mechanism of the reverse proxy (Caddy `forward_auth`, Traefik ForwardAuth). The feature lives inside `sessionguard-master`; no separate authentication container is required. Any OpenID Connect provider works. The reference deployment uses **Caddy Sentinel** as reverse proxy *and* OIDC provider – see [SENTINEL.md](SENTINEL.md) for the complete setup.
 
 ## Why this exists
 
-Guacamole header authentication trusts the username supplied by the reverse proxy. A stale Guacamole token or a separate proxy login cookie must therefore never be sufficient to bypass the identity provider. SessionGuard Access Auth adds a server-side browser session which Traefik verifies before every HTTP request is sent to Guacamole.
-
-The flow is:
+Guacamole header authentication trusts the username supplied by the reverse proxy. A stale Guacamole token or a separate proxy login cookie must therefore never be sufficient to bypass the identity provider. SessionGuard Access Auth adds a server-side browser session which the proxy verifies before every HTTP request is sent to Guacamole.
 
 ```text
-Browser -> Traefik -> SessionGuard /auth/verify -> Guacamole
-                         |
-                         +-> PocketID OIDC login/logout
+Browser -> reverse proxy -> SessionGuard /auth/verify -> Guacamole
+                                  |
+                                  +-> OIDC login/logout at the IdP (e.g. Caddy Sentinel)
 ```
 
-Only a valid SessionGuard access session causes `/auth/verify` to return HTTP 200 and `X-Guacamole-User`. Missing, expired or revoked sessions are redirected to PocketID. SessionGuard never invents a fallback username.
+Only a valid SessionGuard access session causes `/auth/verify` to return HTTP 200 and `X-Guacamole-User`. Missing, expired, revoked or no longer revalidated sessions are redirected to the IdP. SessionGuard never invents a fallback username.
 
 ## Recommended public URL layout
 
-Keep the SessionGuard administration UI on its existing hostname, but route a small authentication path on the Guacamole hostname to the same Master container:
-
 ```text
-https://sessionguard.example.org/                  -> SessionGuard admin UI
-https://guacamole.example.org/                     -> Guacamole
-https://guacamole.example.org/_sessionguard/auth/* -> SessionGuard Master /auth/*
+https://sessionguard.example.org/                  -> SessionGuard admin UI and agent API
+https://rds.example.org/                           -> Guacamole
+https://rds.example.org/_sessionguard/auth/*       -> SessionGuard Master /auth/*
 ```
 
-This keeps the access cookie host-only on the Guacamole hostname. It also avoids cross-domain cookie problems.
+This keeps the access cookie host-only on the Guacamole hostname and avoids cross-domain cookie problems.
 
 ## Master configuration
 
-Create a separate PocketID client for Guacamole access where practical. The issuer may be inherited from the main `oidc` block, while the client ID/secret can be independent.
+Use a separate OIDC client for Guacamole access. Blank `issuer`, `client_id`, `client_secret`, `scopes` and `groups_claims` are inherited from the main `oidc` block.
 
 ```json
 "access_auth": {
   "enabled": true,
-  "issuer": "https://id.example.org",
-  "client_id": "POCKETID-GUACAMOLE-CLIENT-ID",
+  "issuer": "https://sso.example.org",
+  "client_id": "sessionguard-access",
   "client_secret": "SET-BY-SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET",
-  "redirect_url": "https://guacamole.example.org/_sessionguard/auth/oidc/callback",
-  "logout_redirect_url": "https://guacamole.example.org/",
+  "redirect_url": "https://rds.example.org/_sessionguard/auth/oidc/callback",
+  "logout_redirect_url": "https://rds.example.org/",
   "cookie_name": "sg_access_session",
   "cookie_domain": "",
   "secure_cookie": true,
-  "session_hours": 8,
+  "session_hours": 10,
+  "revalidate_minutes": 5,
+  "scopes": ["openid", "profile", "email", "groups", "offline_access"],
   "username_claim": "preferred_username",
-  "allowed_groups": ["guacamole-users"],
-  "allowed_hosts": ["guacamole.example.org"]
+  "allowed_groups": ["RDS-Benutzer"],
+  "allowed_hosts": ["rds.example.org"]
 }
 ```
 
-`cookie_domain` should normally remain empty. This creates a host-only cookie and prevents unrelated subdomains from receiving the access-session token.
+`cookie_domain` should normally remain empty: a host-only cookie keeps unrelated subdomains from receiving the access-session token.
 
-The browser cookie contains only a cryptographically-random opaque token. SessionGuard stores only its SHA-256 hash as the lookup key. Sessions are persisted in the existing Master control-plane store, so a Master restart does not silently re-authorize a user from a Guacamole token alone.
+The browser cookie contains only a cryptographically random opaque token; SessionGuard stores its SHA-256 hash as lookup key. Sessions are persisted in the Master control-plane store, so a Master restart does not silently re-authorize a user from a Guacamole token alone.
 
-## PocketID client
+## OIDC client at the IdP
 
-Configure the PocketID client with:
+| Setting | Value |
+|---|---|
+| Client type | confidential (with secret), PKCE S256 |
+| Redirect URI | `https://rds.example.org/_sessionguard/auth/oidc/callback` |
+| Post-logout redirect URI | `https://rds.example.org/` |
+| Refresh tokens | on, when `revalidate_minutes` is used (scope `offline_access`) |
+| Back-channel logout URI (if the IdP supports it) | `https://rds.example.org/_sessionguard/auth/backchannel-logout` |
 
-```text
-Public client: OFF
-PKCE: ON
-Callback URL:
-https://guacamole.example.org/_sessionguard/auth/oidc/callback
+For browser-initiated logout SessionGuard uses the discovered `end_session_endpoint`, removes the local session first, sends `client_id` plus an `id_token_hint` and returns to `logout_redirect_url`.
 
-Logout Callback URL (post_logout_redirect_uri):
-https://guacamole.example.org/
-```
+## Session revalidation (`revalidate_minutes`)
 
-The Pocket ID field **Logout Callback URLs** is the allow-list for `post_logout_redirect_uri`; do not put the SessionGuard back-channel endpoint into that field. If the provider exposes a dedicated Back-Channel Logout URI setting, SessionGuard's endpoint is `https://guacamole.example.org/_sessionguard/auth/backchannel-logout`.
+IdPs without OIDC back-channel logout – Caddy Sentinel among them – cannot tell SessionGuard that a user was signed out or locked. With `revalidate_minutes` (access auth and admin console, `oidc.revalidate_minutes`) the Master renews every session with its refresh token after that interval:
 
-For browser-initiated logout SessionGuard uses the `end_session_endpoint` discovered from PocketID, removes the local session first, sends `client_id` plus an `id_token_hint` when available, and then returns to `logout_redirect_url`.
+- The IdP re-checks the account, its login policy and the application rules on every refresh. A refused refresh (`invalid_grant`), a different subject or username, or groups that are no longer allowed end the session at once; the next request goes to the login.
+- Groups, e-mail and name are taken from the refreshed ID token, so `X-Guacamole-Groups` follows group changes the IdP reports.
+- Only one refresh per session runs at a time and the stored refresh token is re-read before each refresh: IdPs with refresh-token rotation (Sentinel) end the whole grant if a used token comes back.
+- An unreachable IdP is tolerated for up to twice the interval (retries at most every 30 s), then the session is denied – fail closed, but without deleting it.
+- With revalidation enabled, a login whose token response contains no refresh token is refused with a clear log message; sessions from before the switch end at their first revalidation.
+- `offline_access` is added to the requested scopes automatically. The refresh token never leaves the Master and is useless without the client secret.
 
-## Traefik
+`0` (default) disables revalidation. Allowed range: 0–1440.
 
-The auth path MUST NOT itself use ForwardAuth, otherwise login/callback/logout create a redirect loop.
+## Reverse proxy
 
-Example labels for the SessionGuard Master (adapt router names/network/TLS resolver to your deployment):
+The auth path MUST NOT itself use ForwardAuth, otherwise login/callback/logout create a redirect loop. Before ForwardAuth, strip every client-supplied identity header; after ForwardAuth, copy only SessionGuard's response headers to Guacamole and add the proxy secret (below).
 
-```yaml
-labels:
-  - traefik.enable=true
-  - traefik.http.routers.sg-guac-auth.rule=Host(`guacamole.example.org`) && PathPrefix(`/_sessionguard/auth`)
-  - traefik.http.routers.sg-guac-auth.entrypoints=websecure
-  - traefik.http.routers.sg-guac-auth.tls=true
-  - traefik.http.routers.sg-guac-auth.priority=200
-  - traefik.http.routers.sg-guac-auth.service=sessionguard-master
-  - traefik.http.routers.sg-guac-auth.middlewares=sg-guac-auth-strip
-  - traefik.http.middlewares.sg-guac-auth-strip.stripprefix.prefixes=/_sessionguard
-  - traefik.http.services.sessionguard-master.loadbalancer.server.port=8080
-```
+### Caddy / Caddy Sentinel
 
-On the normal Guacamole router, replace the old `traefik-forward-auth` middleware with two middlewares in this order:
+See `deploy/Caddyfile.sentinel`. Keep `request_header`, `forward_auth` and `reverse_proxy` inside a `route` block – without it Caddy sorts `request_header` after `forward_auth` and deletes the identity it just copied.
 
-```yaml
-labels:
-  # Never trust identity headers supplied by a browser/client.
-  - traefik.http.middlewares.guac-id-scrub.headers.customrequestheaders.X-Guacamole-User=
-  - traefik.http.middlewares.guac-id-scrub.headers.customrequestheaders.X-SessionGuard-User=
-  - traefik.http.middlewares.guac-id-scrub.headers.customrequestheaders.X-SessionGuard-Email=
-  - traefik.http.middlewares.guac-id-scrub.headers.customrequestheaders.X-SessionGuard-Groups=
-  - traefik.http.middlewares.guac-id-scrub.headers.customrequestheaders.X-Guacamole-Groups=
+### Traefik
 
-  - traefik.http.middlewares.guac-sg-auth.forwardauth.address=http://sessionguard-master:8080/auth/verify
-  - traefik.http.middlewares.guac-sg-auth.forwardauth.authResponseHeaders=X-Guacamole-User,X-SessionGuard-User,X-SessionGuard-Email,X-SessionGuard-Groups,X-Guacamole-Groups
-
-  # Add these to the existing Guacamole middleware chain, in this order.
-  - traefik.http.routers.guacamole.middlewares=guac-id-scrub,guac-sg-auth
-```
-
-Traefik copies `authResponseHeaders` from SessionGuard onto the upstream request and replaces conflicting values. The preceding header middleware removes untrusted client-supplied identity headers before authentication.
-
-Both Guacamole and SessionGuard Master must share a Docker network on which the DNS name `sessionguard-master` resolves.
+Route `Host(rds.example.org) && PathPrefix(/_sessionguard/auth)` with a `stripprefix` middleware (`/_sessionguard`) and a high priority to the Master, without ForwardAuth. On the Guacamole router chain a header scrubber (`customrequestheaders` set to empty for `X-Guacamole-User`, `X-Guacamole-Groups`, `X-SessionGuard-*`) before a `forwardauth` middleware with `address=http://sessionguard-master:8080/auth/verify` and `authResponseHeaders=X-Guacamole-User,X-Guacamole-Groups,X-SessionGuard-User,X-SessionGuard-Email,X-SessionGuard-Groups`, then set `X-SessionGuard-Proxy-Auth` with a headers middleware.
 
 ## Guacamole
 
-Keep Guacamole header authentication enabled:
-
-```text
-HTTP_AUTH_HEADER=X-Guacamole-User
+```yaml
+HTTP_AUTH_ENABLED: "true"
+HTTP_AUTH_HEADER: X-Guacamole-User
+SESSIONGUARD_HEADER_LOGIN: "true"          # extension authenticates from the trusted headers
+EXTENSION_PRIORITY: sessionguard-broker   # before guacamole-auth-header (which knows no groups)
+SESSIONGUARD_PROXY_SECRET: <openssl rand -hex 32>
+POSTGRESQL_AUTO_CREATE_ACCOUNTS: "true"
 ```
 
-Use the SessionGuard-built Guacamole image from 0.5.0 or later. The extension contains a small plain-JavaScript helper (no npm/Node runtime):
+### Proxy secret (v0.7)
+
+With `SESSIONGUARD_PROXY_SECRET` the extension trusts identity headers only on requests that also carry this secret in `X-SessionGuard-Proxy-Auth` (name configurable with `SESSIONGUARD_PROXY_SECRET_HEADER`). The reverse proxy adds it after ForwardAuth and strips any client copy. A process that reaches Guacamole directly – bypassing the proxy, e.g. through the published port on the host – cannot log in as anybody by sending `X-Guacamole-User` itself. Requests with a Guacamole token but without a valid identity now end that Guacamole session (fail closed). Without the secret the extension logs a warning at startup and behaves as before; the proxy must then be the only network path to Guacamole.
+
+The extension also contains a small plain-JavaScript helper:
 
 - every 30 seconds it checks `/_sessionguard/auth/status`;
-- if the server-side SessionGuard access session has been revoked/expired, it navigates away from Guacamole, closing browser tunnels/WebSockets;
-- an explicit click on a Guacamole logout action redirects to `/_sessionguard/auth/logout`, which also ends the SessionGuard/PocketID session; generic Guacamole token loss/failover does not trigger IdP logout.
+- if the access session has been revoked, expired or ended by revalidation, it navigates away from Guacamole, closing tunnels/WebSockets;
+- an explicit click on a Guacamole logout action redirects to `/_sessionguard/auth/logout`, which also ends the IdP session; generic Guacamole token loss/failover does not trigger IdP logout.
 
-## Migration from traefik-forward-auth
-
-Do not run both auth middlewares on the Guacamole router. A safe migration is:
-
-1. Deploy SessionGuard 0.5.0 and enable `access_auth`.
-2. Add the high-priority `/_sessionguard/auth` router.
-3. Test `https://guacamole.example.org/_sessionguard/auth/status` (401 while logged out is correct).
-4. Replace the Guacamole router's old ForwardAuth middleware with `guac-id-scrub,guac-sg-auth`.
-5. Rebuild/redeploy the SessionGuard Guacamole image so its 0.5.0 extension is loaded.
-6. After successful tests, remove the old `traefik-forward-auth` service and its cookies/configuration.
+Broker answers are filtered: only `SESSIONGUARD_*` tokens reach the connection, so a broker response can never override Guacamole tokens such as `GUAC_USERNAME`.
 
 ## Expected behavior
 
-- No SessionGuard access cookie: Guacamole request redirects to PocketID.
-- Valid access session: Guacamole receives exactly the PocketID username through `X-Guacamole-User`.
+- No SessionGuard access cookie: Guacamole request redirects to the IdP.
+- Valid access session: Guacamole receives exactly the IdP username through `X-Guacamole-User`.
 - Session older than `session_hours`: denied even if Guacamole still holds an old auth token.
-- PocketID back-channel logout: corresponding SessionGuard sessions are revoked immediately; the browser-side poll closes an already-open Guacamole page within about 30 seconds.
-- Guacamole logout button: an explicit user click performs full SessionGuard/PocketID OIDC logout. If Guacamole merely loses its local token (for example after worker failover/restart), SessionGuard keeps the upstream access session and re-enters Guacamole through header auth.
+- Account signed out or locked at the IdP: with back-channel logout immediately, otherwise at the next revalidation; the browser-side poll closes an open Guacamole page within about 30 seconds.
+- Guacamole logout button: an explicit user click performs full SessionGuard/IdP logout. If Guacamole merely loses its local token (worker failover/restart), SessionGuard keeps the access session and re-enters Guacamole through header auth.
 
-## Identity protection (v0.6)
+## Identity protection
 
-The username emitted as `X-Guacamole-User` *is* the Guacamole account. Because Pocket ID usernames are mutable, SessionGuard additionally enforces:
+The username emitted as `X-Guacamole-User` *is* the Guacamole account. SessionGuard therefore enforces:
 
 | Control | Behavior |
 |---|---|
-| **Identity binding** | On first login a username is permanently bound to the immutable OIDC `sub`. A different `sub` using the same username (case-insensitive) is rejected, and so is a bound `sub` that shows up with a new username (IdP-side rename). Conflicts are audited as `identity_binding_conflict`. On upgrade, bindings are seeded from the existing access sessions (oldest first). |
-| **Reserved usernames** | `access_auth.reserved_usernames` (default `guacadmin`, `administrator`, `root`) can never be used. The check also runs on every ForwardAuth request, so existing sessions stop working immediately. |
-| **Username pattern** | `access_auth.username_pattern` (default `^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`) rejects Unicode look-alikes (e.g. a Cyrillic `а` in `guаcadmin`), whitespace and control characters. |
-| **Header-only Guacamole logins** | The SessionGuard Guacamole extension vetoes every login that was not authenticated by the `header` provider with a matching identity header. Username/password logins against the JDBC database (e.g. `guacadmin`/`guacadmin` via `POST /api/tokens`) are therefore rejected even for users who passed ForwardAuth. Disable only for break-glass with `SESSIONGUARD_ENFORCE_HEADER_AUTH=false`. |
+| **Identity binding** | On first login a username is permanently bound to the immutable OIDC `sub` (and issuer). A different `sub` using the same username (case-insensitive) is rejected, and so is a bound `sub` that shows up with a new username. Conflicts are audited as `identity_binding_conflict`. |
+| **Reserved usernames** | `access_auth.reserved_usernames` (default `guacadmin`, `administrator`, `root`) can never be used. The check runs on every ForwardAuth request. |
+| **Username pattern** | `access_auth.username_pattern` (default `^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`) rejects Unicode look-alikes, whitespace and control characters. |
+| **Header-only Guacamole logins** | The extension vetoes every login that was not authenticated through the SessionGuard header (and, with a proxy secret, the trusted proxy). JDBC username/password logins (e.g. `guacadmin`/`guacadmin`) are rejected. Break-glass: `SESSIONGUARD_ENFORCE_HEADER_AUTH=false`. |
 
-After a **legitimate rename** in Pocket ID, an admin releases the old binding in the Master console under *Access-Sessions → Identity bindings* (or `DELETE /api/v1/access/identities/{username}`). This also ends the user's access sessions; the next login binds the new name. Note that Guacamole treats the new name as a new account, so connection permissions must be granted again (or assigned to Guacamole groups in the first place).
-
-### Pocket ID
-
-- In the Pocket ID admin UI under *Application Configuration*, disable the option that lets users **edit their own account details** (wording depends on the Pocket ID version). SessionGuard's binding stops the takeover even if this stays enabled, but a self-rename then locks the user out until an admin releases the binding.
-- Register the back-channel logout endpoints if your Pocket ID version supports them:
-  - Guacamole access client: `https://<guac-host>/_sessionguard/auth/backchannel-logout`
-  - SessionGuard admin client: `https://<sessionguard-host>/oidc/backchannel-logout`
+After a **legitimate rename** at the IdP, or after **switching the IdP** (new issuer, new subjects – e.g. Pocket ID → Caddy Sentinel), an admin releases the bindings in the Master console under *Access-Sessions → Identity bindings* (single user or "reset all"). The next login binds the new subject. Guacamole treats a new username as a new account, so assign permissions to Guacamole groups rather than to individual users.
 
 ### Remove `guacadmin`
 
 `initdb.sh` creates `guacadmin` with the password `guacadmin`. Grant a real admin Guacamole administrator rights and delete the default account:
 
 ```bash
-docker exec -i guacamole-postgres psql -U guacamole_user -d guacamole_db \
-  -v ON_ERROR_STOP=1 -v admin_user=YOUR_POCKETID_USERNAME \
-  < production/guacamole/harden-guacamole-db.sql
+docker compose exec -T guacamole-postgres psql -U guacamole_user -d guacamole_db \
+  -v ON_ERROR_STOP=1 -v admin_user=YOUR_IDP_USERNAME \
+  < deploy/guacamole/harden-guacamole-db.sql
 ```
 
-The script is idempotent, creates the admin account if it has never logged in, and lists the remaining Guacamole administrators. For **new** installations, `guac-init` runs it automatically as `002-sessionguard-hardening.sql` with `GUAC_ADMIN_USER` from `.env`.
+The script is idempotent and creates the admin account if it has never logged in. For **new** installations `guac-init` runs it automatically with `GUAC_ADMIN_USER` from `.env`.
 
-## Admin console sessions (v0.6)
+## Admin console sessions
 
 Director/admin logins are server-side sessions (opaque cookie, only the SHA-256 is kept in memory):
 
-- `oidc.session_hours` (default 8) is the absolute lifetime and `oidc.idle_timeout_minutes` (default 60) the inactivity timeout.
-- Group membership is re-checked against `admin_groups` on every request.
-- Logout, the *Admin sessions* panel (`GET/DELETE /api/v1/admin/sessions`) and Pocket ID back-channel logout end a session immediately.
-- A Master restart ends all admin sessions; users simply log in again through Pocket ID SSO.
+- `oidc.session_hours` (default 8) is the absolute lifetime and `oidc.idle_timeout_minutes` (default 60) the inactivity timeout; `oidc.revalidate_minutes` renews them at the IdP as described above.
+- Group membership is re-checked against `admin_groups` on every request (and refreshed from the IdP with revalidation).
+- Logout, the *Admin sessions* panel (`GET/DELETE /api/v1/admin/sessions`) and back-channel logout end a session immediately.
+- A Master restart ends all admin sessions; users simply log in again through SSO.
 
-## OIDC groups → Guacamole groups (v0.6)
+## OIDC groups → Guacamole groups
 
-Guacamole permissions are typically assigned to Guacamole **user groups**. With group sync, membership no longer has to be maintained in Guacamole: a user who is in OIDC group `sage-users` automatically gets the permissions of the Guacamole user group `sage-users` (exact name, case-sensitive by default).
+With group sync, membership no longer has to be maintained in Guacamole: a user in IdP group `guac-sage-users` automatically gets the permissions of the Guacamole user group with the mapped name.
 
-How it works:
-
-1. At login, the access session stores the OIDC groups (`groups_claims`, e.g. `groups` or `realm_access.roles`).
-2. ForwardAuth (`/auth/verify`) emits `X-Guacamole-Groups`: the groups after mapping (below), percent-encoded and comma-separated (umlauts and commas survive).
-3. With `SESSIONGUARD_HEADER_LOGIN=true` the SessionGuard Guacamole extension authenticates the user from `X-Guacamole-User` (like `guacamole-auth-header`) and reports these groups as *effective user groups*.
-4. The Guacamole JDBC extension matches effective groups by name against its user groups and applies their connection and system permissions. Groups that do not exist in Guacamole are ignored.
-
-### Master configuration
+1. At login (and at every revalidation) the access session stores the IdP groups (`groups_claims`). Caddy Sentinel sends the CN names of AD groups in `groups`.
+2. ForwardAuth emits `X-Guacamole-Groups`: the groups after mapping, percent-encoded and comma-separated.
+3. With `SESSIONGUARD_HEADER_LOGIN=true` the extension reports these groups as *effective user groups*; the JDBC extension matches them by name against its user groups.
 
 ```json
 "access_auth": {
@@ -206,7 +168,7 @@ How it works:
     "enabled": true,
     "prefix": "guac-",
     "strip_prefix": true,
-    "map": { "/IT/RDS-Admins": "RDS Admins" },
+    "map": { "RDS-Admins": "RDS Admins" },
     "exclude": ["guac-legacy"]
   }
 }
@@ -215,27 +177,16 @@ How it works:
 | Field | Meaning |
 |---|---|
 | `enabled` | Emit `X-Guacamole-Groups` (always, even if empty, so a forged client value is overwritten). |
-| `prefix` | Only pass groups starting with this prefix (case-insensitive). Empty = all groups. Recommended, e.g. `guac-`, so that only groups intended for Guacamole are considered. |
+| `prefix` | Only pass groups starting with this prefix (case-insensitive). Empty = all groups. Recommended so unrelated IdP groups cannot collide with Guacamole group names. |
 | `strip_prefix` | `guac-sage-users` → Guacamole group `sage-users`. |
-| `map` | Explicit renames OIDC → Guacamole; mapped groups bypass `prefix`. |
+| `map` | Explicit renames IdP → Guacamole; mapped groups bypass `prefix`. |
 | `exclude` | Never pass these groups. |
 
-A leading `/` (Keycloak "Full group path") is always removed. The resulting groups per user are visible in the Master console under *Access-Sessions → Guacamole-Gruppen* and for the user at `/_sessionguard/auth/status`.
-
-### Guacamole configuration
-
-```yaml
-SESSIONGUARD_HEADER_LOGIN: "true"          # extension authenticates from the trusted headers
-EXTENSION_PRIORITY: sessionguard-broker   # must run before guacamole-auth-header (which knows no groups)
-HTTP_AUTH_ENABLED: "true"                 # may stay as fallback
-POSTGRESQL_AUTO_CREATE_ACCOUNTS: "true"
-```
-
-Create the user groups in Guacamole (*Settings → Groups*) with exactly the mapped names and assign connections/permissions to the groups. Manual memberships are no longer needed; existing manual memberships keep working in addition.
+A leading `/` (Keycloak "Full group path") is always removed. The resulting groups per user are visible in the Master console under *Access-Sessions → Guacamole-Gruppen* and at `/_sessionguard/auth/status`.
 
 ### Security notes
 
-- `X-Guacamole-Groups` grants permissions. The reverse proxy **must** strip it from client requests and copy it only from the ForwardAuth response (the supplied Caddyfiles and the Traefik labels above do this). Never enable `SESSIONGUARD_HEADER_LOGIN` on a Guacamole instance that is reachable without this proxy.
-- Whoever controls an IdP group controls the Guacamole permissions of the matching Guacamole group, including `ADMINISTER` if that group has it. Use `prefix` so unrelated IdP groups cannot collide with Guacamole group names.
-- Groups are taken from the ID token at the SessionGuard login and stay fixed for the access session (`session_hours`). After a group change in the IdP, revoke the user's access session in the Master console (or wait for its expiry); the next login carries the new groups. Removing a user from a group therefore does not take effect instantly unless the session is revoked.
-- If the SessionGuard identity of a browser changes while Guacamole still holds a token of the previous user, the extension invalidates that Guacamole session instead of continuing as the old user.
+- `X-Guacamole-Groups` grants permissions. The proxy **must** strip it from client requests and copy it only from the ForwardAuth response; use the proxy secret so Guacamole rejects headers from any other path.
+- Whoever controls an IdP group controls the Guacamole permissions of the matching Guacamole group, including `ADMINISTER`. Use `prefix`.
+- Without revalidation or back-channel logout, groups stay fixed for the access session (`session_hours`). Caddy Sentinel takes AD groups from the user's last *Sentinel* login; a change in AD reaches SessionGuard after the user signs in at Sentinel again (or after an admin signs the account out there).
+- If the identity of a browser changes while Guacamole still holds a token of the previous user, the extension invalidates that Guacamole session.

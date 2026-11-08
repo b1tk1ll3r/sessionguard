@@ -14,7 +14,7 @@ SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY}
 SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
 ```
 
-Use a private Docker network between Guacamole and SessionGuard Master where possible. The broker API key is independent from the agent enrollment token and PocketID client secret.
+Use a private Docker network between Guacamole and SessionGuard Master where possible. The broker API key is independent from the agent enrollment token and the OIDC client secrets.
 
 ## 2. Configure Guacamole RDP connections
 
@@ -47,28 +47,16 @@ With `single_session_per_user=true`, the lease key is global per username. With 
 
 ## 4. Header-auth boundary
 
-If Guacamole uses `HTTP_AUTH_HEADER=X-Guacamole-User`, untrusted traffic must not be able to reach Guacamole directly and supply that header. Keep the reverse proxy/header scrubber as the only trusted ingress path. Prefer a dedicated proxy network instead of sharing Guacamole's port with unrelated containers.
+With `SESSIONGUARD_HEADER_LOGIN=true` the extension authenticates users from `X-Guacamole-User`/`X-Guacamole-Groups`. Set `SESSIONGUARD_PROXY_SECRET` (same value the reverse proxy sends as `X-SessionGuard-Proxy-Auth` after ForwardAuth): identity headers without the secret are ignored, and an existing Guacamole session without a valid identity ends. Keep Guacamole reachable only through the proxy anyway (the reference stack binds it to `127.0.0.1`).
 
-## 5. SessionGuard Access Auth (0.5.0+)
+## 5. SessionGuard Access Auth
 
-SessionGuard Master can replace the separate `traefik-forward-auth` service for Guacamole. Keep Guacamole's header-auth extension (`HTTP_AUTH_HEADER=X-Guacamole-User`), but configure Traefik to call:
-
-```text
-http://sessionguard-master:8080/auth/verify
-```
-
-Expose the Master's `/auth/*` routes on the Guacamole hostname through the reserved public prefix `/_sessionguard/auth/*`, with that router excluded from ForwardAuth. The recommended PocketID callback is therefore:
+The SessionGuard Master is the ForwardAuth endpoint for Guacamole (`http://127.0.0.1:8080/auth/verify` from the host proxy). Its login endpoints are published on the Guacamole hostname below `/_sessionguard/auth/*`; the OIDC redirect URI is therefore:
 
 ```text
-https://guacamole.example.org/_sessionguard/auth/oidc/callback
+https://rds.example.org/_sessionguard/auth/oidc/callback
 ```
 
-and the PocketID logout/back-channel callback is:
+Before ForwardAuth, strip client-provided `X-Guacamole-*` and `X-SessionGuard-*` headers; after ForwardAuth copy only SessionGuard's response headers and add the proxy secret. `deploy/Caddyfile.sentinel` does all of this for Caddy Sentinel.
 
-```text
-https://guacamole.example.org/_sessionguard/auth/backchannel-logout
-```
-
-Before ForwardAuth, strip any client-provided `X-Guacamole-User` and `X-SessionGuard-*` identity headers. After successful ForwardAuth, copy only SessionGuard's auth response headers to Guacamole.
-
-See `docs/ACCESS-AUTH.md` for complete labels and migration steps.
+See `docs/ACCESS-AUTH.md` and `docs/SENTINEL.md`.

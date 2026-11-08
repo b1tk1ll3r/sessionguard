@@ -1,62 +1,60 @@
 {
   "listen": ":8080",
-  "public_url": "https://sessionguard.hilden.info",
-  "data_file": "/var/lib/sessionguard/master.json",
+  "public_url": "https://sessionguard.example.org",
   "database_url": "",
   "enrollment_token": "SET-BY-SESSIONGUARD_ENROLLMENT_TOKEN",
   "offline_after_seconds": 30,
   "history_limit": 50000,
-
   "oidc": {
-    "issuer": "https://auth.hilden.info",
-    "client_id": "POCKETID-SESSIONGUARD-ADMIN-CLIENT-ID",
+    "issuer": "https://sso.example.org",
+    "client_id": "REPLACE-WITH-SENTINEL-CLIENT-ID-ADMIN",
     "client_secret": "SET-BY-SESSIONGUARD_OIDC_CLIENT_SECRET",
-    "redirect_url": "https://sessionguard.hilden.info/oidc/callback",
+    "redirect_url": "https://sessionguard.example.org/oidc/callback",
+    "logout_redirect_url": "https://sessionguard.example.org/",
+    "scopes": ["openid", "profile", "email", "groups", "offline_access"],
+    "groups_claims": ["groups"],
     "admin_groups": [],
     "secure_cookie": true,
     "session_hours": 8,
-    "idle_timeout_minutes": 60
+    "idle_timeout_minutes": 60,
+    "revalidate_minutes": 5
   },
-
   "access_auth": {
     "enabled": true,
-    "issuer": "https://auth.hilden.info",
-    "client_id": "POCKETID-GUACAMOLE-ACCESS-CLIENT-ID",
+    "issuer": "https://sso.example.org",
+    "client_id": "REPLACE-WITH-SENTINEL-CLIENT-ID-ACCESS",
     "client_secret": "SET-BY-SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET",
-    "redirect_url": "https://ts.hilden.info/_sessionguard/auth/oidc/callback",
-    "logout_redirect_url": "https://ts.hilden.info/",
+    "redirect_url": "https://rds.example.org/_sessionguard/auth/oidc/callback",
+    "logout_redirect_url": "https://rds.example.org/",
     "cookie_name": "sg_access_session",
     "cookie_domain": "",
     "secure_cookie": true,
-    "session_hours": 8,
+    "session_hours": 10,
+    "revalidate_minutes": 5,
+    "scopes": ["openid", "profile", "email", "groups", "offline_access"],
+    "groups_claims": ["groups"],
     "username_claim": "preferred_username",
     "reserved_usernames": ["guacadmin", "administrator", "root"],
-    "username_pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$",
-    "allowed_groups": [],
-    "allowed_hosts": [
-      "ts.hilden.info"
-    ],
+    "username_pattern": "^[a-z0-9][a-z0-9._@-]{0,63}$",
+    "allowed_groups": ["RDS-Benutzer"],
+    "allowed_hosts": ["rds.example.org"],
     "guacamole_groups": {
       "enabled": true,
-      "prefix": "",
+      "prefix": "guac-",
       "strip_prefix": false,
       "map": {},
       "exclude": []
     }
   },
-
   "rbac": {
     "default_role": "viewer",
     "groups": {
-      "sessionguard-admins": ["admin"],
-      "sessionguard-helpdesk": ["helpdesk"],
-      "sessionguard-operators": ["operator"],
-      "sessionguard-policy": ["policy_admin"],
-      "sessionguard-profile": ["profile_admin"],
-      "sessionguard-auditors": ["auditor"]
+      "SessionGuard-Admins": ["admin"],
+      "SessionGuard-Helpdesk": ["helpdesk"],
+      "SessionGuard-Operators": ["operator"],
+      "SessionGuard-Auditors": ["auditor"]
     }
   },
-
   "broker": {
     "enabled": true,
     "api_key": "SET-BY-SESSIONGUARD_BROKER_API_KEY",
@@ -66,7 +64,6 @@
     "single_session_per_user": true,
     "default_farm_id": ""
   },
-
   "alerts": {
     "enabled": true,
     "webhook_url": "",

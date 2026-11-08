@@ -53,7 +53,7 @@ Im Master unter **Apps & Desktops → Resource bearbeiten**:
 - **Guacamole Connection ID** setzen. Der Browser-Helper kennt die numerische ID aus der URL. Eine reine Zuordnung über den Namen funktioniert nur, solange der Seitentitel dem Verbindungsnamen entspricht.
 - **Multi-Monitor für diese Resource erlauben** aktivieren.
 - **Maximale Monitore**: 2–4.
-- **Nur für Gruppen**: optional, kommagetrennte PocketID-Gruppen (z. B. `rds-multimonitor`). Leer bedeutet: alle Benutzer mit gültiger Access-Session.
+- **Nur für Gruppen**: optional, kommagetrennte IdP-Gruppen (bei Caddy Sentinel: AD-Gruppen) (z. B. `rds-multimonitor`). Leer bedeutet: alle Benutzer mit gültiger Access-Session.
 
 Per API:
 
@@ -64,9 +64,9 @@ PUT /api/v1/resources/{id}
 
 ### 3. Reverse Proxy
 
-Der Endpoint `/_sessionguard/auth/display-policy` liegt unter dem bereits vorhandenen Access-Auth-Präfix. Traefik (`PathPrefix(/_sessionguard/auth)`) und die mitgelieferten Caddyfiles leiten ihn ohne weitere Änderung weiter.
+Der Endpoint `/_sessionguard/auth/display-policy` liegt unter dem bereits vorhandenen Access-Auth-Präfix. `deploy/Caddyfile.sentinel` (und eine Traefik-Route auf `PathPrefix(/_sessionguard/auth)`) leiten ihn ohne weitere Änderung weiter.
 
-Eine eigene `Permissions-Policy` darf `window-management` nicht sperren. Die mitgelieferten Caddyfiles setzen `window-management=(self)`.
+Eine eigene `Permissions-Policy` darf `window-management` nicht sperren. `deploy/Caddyfile.sentinel` setzt `window-management=(self)`. Sind in der Sentinel-Policy `rds` unter „Header“ eigene Sicherheits-Header aktiv, dort ebenfalls `window-management=(self), fullscreen=(self)` in die Permissions-Policy aufnehmen.
 
 ### 4. Guacamole-Image neu bauen
 

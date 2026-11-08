@@ -4,7 +4,7 @@
 
 SessionGuard has five distinct credential classes:
 
-1. OIDC/PocketID browser administrator authentication.
+1. OIDC browser administrator authentication (reference: Caddy Sentinel).
 2. Agent enrollment token used only to bootstrap a new agent.
 3. Per-agent bearer tokens for heartbeats.
 4. Guacamole broker API key.
@@ -20,7 +20,8 @@ Therefore:
 
 - do not publish Guacamole's backend port directly;
 - strip user-supplied identity headers at the trusted edge;
-- prefer a dedicated network between Traefik/forward-auth and Guacamole;
+- set `SESSIONGUARD_PROXY_SECRET` so the extension accepts identity headers only from the proxy;
+- publish Guacamole only on `127.0.0.1` behind the host proxy (reference deployment) or on a dedicated proxy network;
 - do not attach unrelated/untrusted containers to a network that can directly reach Guacamole's trusted backend listener.
 
 ## Master split-brain protection
@@ -63,7 +64,7 @@ High-impact actions such as process termination, forced logoff and maintenance c
 
 ## Local agent UI
 
-The local UI is an intentional break-glass/control-plane fallback. Protect it with OIDC and network ACLs. Do not expose it broadly to the Internet merely because it supports PocketID.
+The local UI is an intentional break-glass/control-plane fallback. Protect it with OIDC and network ACLs. Do not expose it broadly to the Internet merely because it supports OIDC.
 
 ## Container hardening
 

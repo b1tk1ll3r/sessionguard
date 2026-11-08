@@ -1,5 +1,7 @@
 # Public Edge Security (Caddy + SessionGuard EdgeGuard)
 
+> **Not needed with Caddy Sentinel** (reference deployment, `docs/SENTINEL.md`): Sentinel brings its own rate limits, IDS, temporary bans, WAF and threat feeds. EdgeGuard remains available for deployments with a plain Caddy.
+
 SessionGuard EdgeGuard is a small Go service for the public reverse-proxy host.
 It is **not** another login and it is not a WAF replacement. It runs locally on
 `127.0.0.1:9081` and is called by Caddy using `forward_auth` before traffic is
@@ -93,7 +95,7 @@ buckets.
 The example uses tighter limits for OIDC login/callback paths: `/_sessionguard/auth/login` and
 `/_sessionguard/auth/oidc/callback` on the Guacamole host, and `/login`,
 `/auth/login` and `/oidc/` on the SessionGuard administration host. These endpoints
-do not contain the PocketID password check itself; the limits are intended to
+do not contain the IdP password check itself; the limits are intended to
 protect state/session allocation and redirect processing from floods.
 
 ### Bounded per-IP memory
@@ -165,7 +167,7 @@ traffic but reduces log amplification once a single logger exceeds 200 entries
 per second.
 
 The public SessionGuard host denies `/metrics` and `/api/v1/broker/*` at Caddy.
-Guacamole workers call broker APIs directly over NetBird instead.
+Guacamole workers call broker APIs directly over a private network instead.
 
 On the Guacamole host only `/_sessionguard/auth/*` is forwarded to the Master
 (with `/_sessionguard` stripped, so the Master receives `/auth/login`,
@@ -209,7 +211,7 @@ is logged and the previous working configuration remains active.
 
 1. Keep provider/network DDoS protection enabled.
 2. Expose only TCP 80/443 publicly; keep EdgeGuard on localhost.
-3. Keep NetBird peer/backend ports private.
+3. Keep backend ports (Master, Guacamole, guacd, databases) private.
 4. Pin Caddy to a currently patched release rather than an old major-only image
    during controlled production rollouts.
 5. Monitor HTTP 429 and EdgeGuard auto-ban counters before tightening limits.

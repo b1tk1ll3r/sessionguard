@@ -21,13 +21,13 @@
     ]
   },
   "oidc": {
-    "issuer": "https://id.example.org",
-    "client_id": "POCKET-ID-AGENT-CLIENT-ID",
-    "client_secret": "POCKET-ID-AGENT-CLIENT-SECRET",
+    "issuer": "https://sso.example.org",
+    "client_id": "sessionguard-agent",
+    "client_secret": "SET-BY-SESSIONGUARD_OIDC_CLIENT_SECRET",
     "redirect_url": "https://ts01-mgmt.example.org/oidc/callback",
     "logout_redirect_url": "https://ts01-mgmt.example.org/",
     "admin_groups": [
-      "sessionguard-admins"
+      "SessionGuard-Admins"
     ],
     "secure_cookie": true
   },

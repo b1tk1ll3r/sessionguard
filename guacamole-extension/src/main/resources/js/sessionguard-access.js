@@ -51,7 +51,7 @@
 
         getAccessSessionStatus().then(function (response) {
             if (response.status === 401 || response.status === 403) {
-                // The SessionGuard/PocketID access session itself is no longer
+                // The SessionGuard/IdP access session itself is no longer
                 // valid. Start a fresh OIDC flow, but do not treat this as an
                 // explicit logout request.
                 redirect(loginURL());
@@ -83,7 +83,7 @@
 
             if (element.closest('.logout')) {
                 // Let Guacamole's own click handler invalidate its local auth
-                // token first, then perform SessionGuard/PocketID logout.
+                // token first, then perform SessionGuard/IdP logout.
                 window.setTimeout(function () {
                     redirect(logoutURL());
                 }, 150);

@@ -3,7 +3,7 @@
 ## Recommended rollout order
 
 1. Deploy PostgreSQL and Master behind TLS/reverse proxy.
-2. Configure PocketID group RBAC and verify a read-only user and an administrator.
+2. Configure IdP group RBAC (Caddy Sentinel: AD groups) and verify a read-only user and an administrator.
 3. Upgrade one RDS host/agent and keep profile cleanup in Dry-Run.
 4. Verify heartbeat telemetry, processes, health and session history.
 5. Create a canary Farm containing only that host.

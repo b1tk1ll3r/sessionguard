@@ -156,7 +156,7 @@ Also test profile-failure and offline-agent alerts.
 
 ## OIDC/RBAC
 
-With real PocketID groups:
+With real IdP groups (e.g. AD groups via Caddy Sentinel):
 
 - viewer cannot mutate
 - helpdesk can perform allowed session operations
@@ -176,7 +176,7 @@ Before broad rollout record:
 
 - exact Windows Server builds tested
 - exact Guacamole image/extension build
-- PocketID version/client configuration
+- IdP (Caddy Sentinel) version and OIDC application configuration
 - PostgreSQL version
 - profile-store SMB server/version
 - successful restore from PostgreSQL backup

@@ -24,10 +24,17 @@ type OIDCConfig struct {
 	// (default: groups), e.g. ["groups", "realm_access.roles"] for Keycloak.
 	Scopes       []string `json:"scopes,omitempty"`
 	GroupsClaims []string `json:"groups_claims,omitempty"`
+	// RevalidateMinutes > 0 renews every session at the IdP with its refresh
+	// token after this many minutes (scope offline_access). A refused
+	// refresh – account locked, signed out, groups no longer admitted – ends
+	// the session. Use it with IdPs without back-channel logout (Caddy
+	// Sentinel). 0 disables it.
+	RevalidateMinutes int `json:"revalidate_minutes,omitempty"`
 }
 
-// AccessAuthConfig configures the SessionGuard Master as a Traefik ForwardAuth
-// endpoint for browser-facing services such as Apache Guacamole. It deliberately
+// AccessAuthConfig configures the SessionGuard Master as a ForwardAuth
+// endpoint (Caddy forward_auth, Traefik ForwardAuth) for browser-facing
+// services such as Apache Guacamole. It deliberately
 // has its own redirect/cookie scope because the SessionGuard admin UI and the
 // protected application may live on different DNS domains. Blank issuer/client
 // fields inherit their values from the primary OIDC configuration.
@@ -58,6 +65,8 @@ type AccessAuthConfig struct {
 	// GuacamoleGroups passes OIDC groups to Guacamole (X-Guacamole-Groups),
 	// where they are matched by name against Guacamole user groups.
 	GuacamoleGroups GuacamoleGroupMapping `json:"guacamole_groups"`
+	// RevalidateMinutes: see OIDCConfig.RevalidateMinutes.
+	RevalidateMinutes int `json:"revalidate_minutes,omitempty"`
 }
 
 // GuacamoleGroupMapping selects and renames OIDC groups for Guacamole.
@@ -89,17 +98,21 @@ type IdentityBinding struct {
 // AuthSession is an opaque, server-side browser session. SessionGuard stores
 // only the SHA-256 hash of the random browser token as the map key.
 type AuthSession struct {
-	ID        string    `json:"id"`
-	TokenHash string    `json:"token_hash"`
-	Subject   string    `json:"subject"`
-	SID       string    `json:"sid,omitempty"`
-	Username  string    `json:"username"`
-	Email     string    `json:"email,omitempty"`
-	Name      string    `json:"name,omitempty"`
-	Groups    []string  `json:"groups,omitempty"`
-	IDToken   string    `json:"id_token,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID        string   `json:"id"`
+	TokenHash string   `json:"token_hash"`
+	Subject   string   `json:"subject"`
+	SID       string   `json:"sid,omitempty"`
+	Username  string   `json:"username"`
+	Email     string   `json:"email,omitempty"`
+	Name      string   `json:"name,omitempty"`
+	Groups    []string `json:"groups,omitempty"`
+	IDToken   string   `json:"id_token,omitempty"`
+	// RefreshToken renews the session at the IdP (revalidate_minutes). It is
+	// useless without the client secret and never leaves the Master.
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	ValidatedAt  time.Time `json:"validated_at,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
 }
 
 type RBACConfig struct {

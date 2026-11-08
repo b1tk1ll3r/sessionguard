@@ -167,6 +167,11 @@ func LoadMaster(path string) (Master, error) {
 			return c, errors.New("oidc.admin_groups or rbac.groups must be configured (or set oidc.allow_all_authenticated_users=true explicitly)")
 		}
 	}
+	for label, v := range map[string]int{"oidc.revalidate_minutes": c.OIDC.RevalidateMinutes, "access_auth.revalidate_minutes": c.AccessAuth.RevalidateMinutes} {
+		if v < 0 || v > 1440 {
+			return c, fmt.Errorf("%s must be between 0 (off) and 1440", label)
+		}
+	}
 	if err := validateSecret("enrollment_token", c.EnrollmentToken); err != nil {
 		return c, err
 	}

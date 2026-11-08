@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.7.0 — Caddy Sentinel als Reverse-Proxy und OIDC-Provider
+
+### Deployment
+
+- Neues Referenz-Deployment in `deploy/`: Caddy Sentinel läuft auf dem Host (Reverse-Proxy, WAF/IDS, OIDC-Server mit AD-/LDAP-Anmeldung und zweitem Faktor), der komplette SessionGuard-Stack – Master, Guacamole, guacd, beide PostgreSQL – in **einem** Compose-Projekt (`docker-compose.yml`, optional `docker-compose.workers.yml` für weitere Guacamole-Worker). Alle Ports nur auf `127.0.0.1`, Datenbanken und guacd ohne veröffentlichten Port, Broker-API nur im internen Docker-Netz.
+- `deploy/Caddyfile.sentinel` mit den Sites für Anmelde-Adresse, Admin-Konsole und Guacamole; `deploy/master.json.example` und `deploy/.env.example` für Sentinel.
+- Entfernt: NetBird-Deployments (`production/`, `deploy/public-vps-netbird/`), die Pocket-ID-Anleitung, das Traefik-Beispiel und die eingecheckte `production/sessionguard-agent.exe` (Agent-Binaries nur noch über Releases). `harden-guacamole-db.sql` liegt jetzt unter `deploy/guacamole/`.
+- Neue Anleitung `docs/SENTINEL.md`; `docs/ACCESS-AUTH.md`, `docs/INSTALLATION.md` (Teile A–F) und weitere Dokumente sind IdP- und proxy-neutral bzw. auf Sentinel umgestellt. SessionGuard bleibt unabhängig: Standard-OIDC und Standard-ForwardAuth.
+
+### Revalidierung von Sitzungen
+
+- Neu: `oidc.revalidate_minutes` und `access_auth.revalidate_minutes` (0–1440, Standard 0). Der Master erneuert Admin- und Access-Sessions nach diesem Intervall mit ihrem Refresh-Token beim IdP. Ein abgelehnter Refresh, ein anderer `sub`/Benutzername oder nicht mehr erlaubte Gruppen beenden die Sitzung; Gruppen, E-Mail und Name werden aus dem erneuerten ID-Token übernommen. Damit wirken Abmelden/Sperren beim IdP auch ohne Back-Channel-Logout (Caddy Sentinel bietet keines).
+- Höchstens ein Refresh pro Sitzung gleichzeitig, der gespeicherte Refresh-Token wird vorher neu gelesen (Sentinel beendet bei wiederverwendetem Token die ganze Freigabe). Ist der IdP nicht erreichbar, gilt die Sitzung bis zum Doppelten des Intervalls weiter, danach wird sie abgelehnt.
+- Mit Revalidierung wird `offline_access` automatisch angefordert; ein Login ohne Refresh-Token wird mit eindeutiger Meldung abgelehnt. Der Refresh-Token verlässt den Master nie (nicht in API-Antworten).
+- Abmelden über `/auth/logout` fragt den IdP nicht mehr vorher an.
+
+### Guacamole-Extension
+
+- `SESSIONGUARD_PROXY_SECRET` (+ `SESSIONGUARD_PROXY_SECRET_HEADER`, Standard `X-SessionGuard-Proxy-Auth`): Identitäts-Header zählen nur zusammen mit dem Secret, das der Reverse-Proxy nach `forward_auth` setzt. Ein Prozess, der Guacamole direkt erreicht, kann sich nicht per `X-Guacamole-User` als beliebiger Benutzer anmelden. Ohne Secret: Warnung beim Start, bisheriges Verhalten.
+- Fehlt bei einer bestehenden Guacamole-Sitzung die SessionGuard-Identität, wird die Guacamole-Sitzung beendet (vorher: weiter als alter Benutzer).
+- Broker-Antworten werden auf `SESSIONGUARD_*`-Tokens beschränkt; `GUAC_USERNAME`, `GUAC_PASSWORD` usw. lassen sich darüber nicht überschreiben.
+- JUnit-Tests für Secret-Prüfung, Token-Filter und Gruppen-Parsing.
+
+### Tests
+
+- Go-Unit-Tests für die Revalidierung (Rotation, Ablehnung, Gruppenentzug, Subject-/Namenswechsel, IdP-Ausfall mit Kulanzzeit, parallele Requests ohne doppelten Refresh, Admin-Sitzungen) und für das Sentinel-Beispiel `deploy/master.json.example`.
+- End-to-End gegen Caddy Sentinel 1.3.0 (aus dem Quellstand gebaut) mit einem AD-ähnlichen LDAP-Server: AD-Login (`DOMÄNE\benutzer` und UPN) mit TOTP, Gruppen-Mapping, Header-Spoofing, abgelehnte Gruppen, SSO zur Admin-Konsole, Revalidierung, Widerruf in Sentinel und Logout.
+
 ## 0.6.0 — Multi-Monitor (Span) + Security-Hardening
 
 ### Multi-Monitor
