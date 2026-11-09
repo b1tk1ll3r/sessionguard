@@ -6,12 +6,12 @@ import (
 )
 
 // The shipped Caddy Sentinel example must stay loadable once the secrets
-// come from the environment, as in deploy/docker-compose.yml.
+// come from the environment, as in deploy/dmz/docker-compose.yml.
 func TestSentinelMasterExampleLoads(t *testing.T) {
 	for _, k := range []string{"SESSIONGUARD_ENROLLMENT_TOKEN", "SESSIONGUARD_BROKER_API_KEY", "SESSIONGUARD_OIDC_CLIENT_SECRET", "SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET"} {
 		t.Setenv(k, strings.Repeat("a1", 16)+k)
 	}
-	c, err := LoadMaster("../../deploy/master.json.example")
+	c, err := LoadMaster("../../deploy/dmz/master.json.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestRevalidateMinutesRange(t *testing.T) {
 		t.Setenv(k, strings.Repeat("b2", 16)+k)
 	}
 	dir := t.TempDir()
-	c, err := LoadMaster("../../deploy/master.json.example")
+	c, err := LoadMaster("../../deploy/dmz/master.json.example")
 	if err != nil {
 		t.Fatal(err)
 	}

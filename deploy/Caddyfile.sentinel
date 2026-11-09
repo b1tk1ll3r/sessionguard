@@ -1,54 +1,71 @@
-# SessionGuard sites for Caddy Sentinel on the Docker host (docs/SENTINEL.md).
+# SessionGuard-Sites für Caddy Sentinel auf dem DMZ-Host (docs/SENTINEL.md)
 #
-# Save as /etc/caddy/sites/sessionguard.caddy (the Sentinel Caddyfile imports
-# sites/*.caddy) or paste the blocks into the Caddyfile in the Sentinel panel.
+# Ablegen als /etc/caddy/sites/sessionguard.caddy (die Sentinel-Caddyfile
+# importiert sites/*.caddy) oder im Sentinel-Panel einfügen. Anzupassen:
+#   - Hostnamen sso.example.org, sessionguard.example.org, rds.example.org
+#   - 10.0.20.11 / 10.0.20.12: LAN-IPs der Guacamole-Worker (worker/.env GUACAMOLE_BIND)
+#   - 127.0.0.1:18080: Port des Masters (dmz/.env SESSIONGUARD_MASTER_PORT)
 #
-# Secret for Guacamole (same value as SESSIONGUARD_PROXY_SECRET in .env):
-#   install -m 0640 -o root -g caddy /dev/null /etc/caddy/sessionguard-proxy.secret
-#   printf '%s' "$SESSIONGUARD_PROXY_SECRET" > /etc/caddy/sessionguard-proxy.secret
-# A file placeholder is used instead of {env.*}: Caddy runs with --environ
-# and would print environment variables into the journal.
+# Schlüssel für Guacamole (derselbe Wert wie SESSIONGUARD_PROXY_SECRET in
+# worker/.env auf allen Workern):
+#   openssl rand -hex 32 > /tmp/sg-secret
+#   install -m 0640 -o root -g caddy /tmp/sg-secret /etc/caddy/sessionguard-proxy.secret
+#   shred -u /tmp/sg-secret
+# Caddy liest ihn aus der Datei statt aus {env.*}: Caddy läuft mit --environ
+# und würde Umgebungsvariablen ins Journal schreiben.
 
 # ---------------------------------------------------------------------------
-# Sentinel OIDC server (issuer). Login methods, 2FA and allowed groups come
-# from the Sentinel policy "sso" (tab "Anmeldung", e.g. Domänenkonten/AD).
+# 1. Anmelde-Adresse (OIDC-Server von Sentinel). Dahinter liegt keine
+#    Anwendung. Anmeldemethoden, zweiter Faktor und erlaubte Gruppen kommen
+#    aus der Sentinel-Policy "sso" (Reiter "Anmeldung", z. B. Domänenkonten).
 sso.example.org {
 	sentinel sso
 	respond "Anmeldung" 200
 }
 
 # ---------------------------------------------------------------------------
-# SessionGuard admin console, Agent endpoints and Agent enrollment.
-# Recommended Sentinel policy "sessionguard": IP allow list (admin networks
-# and the networks of the RDS session hosts), WAF "detect only" – policy
-# JSON looks like an attack to the CRS.
+# 2. SessionGuard-Admin-Konsole, Agent-API und Broker-API.
+#    Sentinel-Policy "sessionguard": IP-Freigaben für Admin-Netze, RDS-Hosts
+#    (Agents) und Worker (Broker); WAF auf "Erkennen" (Policy-JSON sieht für
+#    das CRS wie ein Angriff aus).
 sessionguard.example.org {
 	sentinel sessionguard
 	encode zstd gzip
 	header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 
-	# Internal only: the broker is called by Guacamole over Docker, metrics
-	# are scraped locally, access auth belongs to the Guacamole host.
-	@internal path /metrics /api/v1/broker/* /auth/*
-	respond @internal 404
+	route {
+		# Broker-API nur für die Guacamole-Worker.
+		@broker {
+			path /api/v1/broker/*
+			remote_ip 10.0.20.11 10.0.20.12
+		}
+		reverse_proxy @broker 127.0.0.1:18080
 
-	reverse_proxy 127.0.0.1:8080
+		# Sonst nie von außen: Broker, Metriken und die Access-Auth (die
+		# gehört zur Guacamole-Adresse, siehe unten).
+		@internal path /metrics /api/v1/broker/* /auth/*
+		respond @internal 404
+
+		reverse_proxy 127.0.0.1:18080
+	}
 }
 
 # ---------------------------------------------------------------------------
-# Guacamole with SessionGuard access auth (OIDC against sso.example.org).
-# Sentinel policy "rds": no Sentinel login here (SessionGuard does it), WAF
-# exceptions for /websocket-tunnel and /api/ if the CRS reports false
-# positives, bot challenge off (Guacamole uses XHR and WebSockets).
+# 3. Guacamole. Vor jedem Request fragt Caddy SessionGuard, ob der Browser
+#    angemeldet ist (forward_auth). Nein → Weiterleitung zur Anmeldung.
+#    Ja → SessionGuard nennt den Benutzer, Caddy reicht ihn als
+#    X-Guacamole-User weiter und legt den Schlüssel dazu.
+#    Sentinel-Policy "rds": keine Sentinel-Anmeldung (macht SessionGuard über
+#    OIDC), Bot-Challenge aus (Guacamole nutzt XHR und WebSockets).
 rds.example.org {
 	sentinel rds
 	encode zstd gzip
-	# window-management: getScreenDetails() for the multi-monitor helper
+	# window-management: getScreenDetails() für Multi-Monitor
 	header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), fullscreen=(self), window-management=(self)"
 
 	route {
-		# SessionGuard login endpoints on the Guacamole host, so the access
-		# cookie stays host-bound. The Master sees /auth/... after the strip.
+		# Login, Rücksprung und Logout von SessionGuard auf der Guacamole-
+		# Adresse, damit das Anmelde-Cookie an diesem Hostnamen bleibt.
 		handle /_sessionguard/auth/* {
 			uri strip_prefix /_sessionguard
 			request_header -X-Guacamole-User
@@ -57,7 +74,7 @@ rds.example.org {
 			request_header -X-SessionGuard-Email
 			request_header -X-SessionGuard-Groups
 			request_header -X-SessionGuard-Proxy-Auth
-			reverse_proxy 127.0.0.1:8080
+			reverse_proxy 127.0.0.1:18080
 		}
 
 		handle /_sessionguard/* {
@@ -65,11 +82,11 @@ rds.example.org {
 		}
 
 		handle {
-			# The inner route keeps the written order. Without it Caddy sorts
-			# request_header after forward_auth and would delete the identity
-			# headers forward_auth just copied.
+			# Das innere route hält die Reihenfolge. Ohne route sortiert Caddy
+			# request_header hinter forward_auth und löscht die Identität,
+			# die forward_auth gerade gesetzt hat.
 			route {
-				# Never pass identity headers or the proxy secret from a client.
+				# Nie Identität oder Schlüssel vom Browser übernehmen.
 				request_header -X-Guacamole-User
 				request_header -X-Guacamole-Groups
 				request_header -X-SessionGuard-User
@@ -77,19 +94,21 @@ rds.example.org {
 				request_header -X-SessionGuard-Groups
 				request_header -X-SessionGuard-Proxy-Auth
 
-				forward_auth 127.0.0.1:8080 {
+				forward_auth 127.0.0.1:18080 {
 					uri /auth/verify
 					copy_headers X-Guacamole-User X-Guacamole-Groups X-SessionGuard-User X-SessionGuard-Email X-SessionGuard-Groups
 				}
 
-				reverse_proxy 127.0.0.1:8081 {
+				reverse_proxy 10.0.20.11:18080 10.0.20.12:18080 {
 					header_up X-SessionGuard-Proxy-Auth {file./etc/caddy/sessionguard-proxy.secret}
 
-					# With docker-compose.workers.yml add the other workers and
-					# keep the sticky cookie (Guacamole tunnel state per process):
-					#   to 127.0.0.1:8081 127.0.0.1:8082 127.0.0.1:8083
-					#   lb_policy cookie sg_guac_node
-					#   health_uri /
+					# Ein Browser bleibt bei "seinem" Worker (Guacamole hält
+					# den Tunnel im Prozess).
+					lb_policy cookie sg_guac_node
+					lb_try_duration 5s
+					lb_try_interval 250ms
+					health_uri /
+					health_interval 10s
 				}
 			}
 		}

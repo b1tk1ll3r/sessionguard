@@ -8,7 +8,7 @@ SessionGuard is a Go-based **RDS control plane** for Windows Remote Desktop Sess
 
 ## 0.7.0 Caddy Sentinel as reverse proxy and identity provider
 
-- Reference deployment `deploy/`: Caddy Sentinel on the host (reverse proxy, WAF/IDS, OIDC server with Active Directory/LDAP login and second factor), the whole SessionGuard stack – Master, Guacamole, guacd, both PostgreSQL databases – in one Docker Compose project bound to `127.0.0.1`. NetBird, Pocket ID, Traefik and the public-VPS/worker split are no longer needed. See `docs/SENTINEL.md`.
+- Reference deployment `deploy/`: Caddy Sentinel on the DMZ host (reverse proxy, WAF/IDS, OIDC server with Active Directory/LDAP login and second factor) with the SessionGuard Master next to it; Guacamole workers and their database in the internal network. NetBird, Pocket ID and Traefik are no longer needed. See `docs/SENTINEL.md`.
 - `revalidate_minutes` (admin console and access auth): sessions are renewed at the IdP with refresh tokens, so a sign-out, lock or removed group at the IdP ends SessionGuard sessions without back-channel logout.
 - Guacamole extension: identity headers count only with the reverse proxy's shared secret (`SESSIONGUARD_PROXY_SECRET`), a missing identity ends the Guacamole session (fail closed), broker answers are limited to `SESSIONGUARD_*` tokens.
 
@@ -165,14 +165,22 @@ SessionGuard Master  ---------------- PostgreSQL
 
 Set up Caddy Sentinel first (AD connection, policies, OIDC server with the applications `sessionguard-admin` and `sessionguard-access`, sites from `deploy/Caddyfile.sentinel`) – step by step in `docs/SENTINEL.md`. Then:
 
+Three Docker stacks, for a DMZ host and an internal network:
+
+| Stack | Host | Content |
+|---|---|---|
+| `deploy/dmz` | DMZ, next to Caddy Sentinel | SessionGuard Master + PostgreSQL (port only on `127.0.0.1`) |
+| `deploy/guacamole-db` | internal | shared Guacamole PostgreSQL |
+| `deploy/worker` | internal, per worker | Guacamole with extension + guacd |
+
 ```bash
-cd deploy
+cd deploy/<stack>
 cp .env.example .env               # secrets: openssl rand -hex 32
-cp master.json.example master.json # host names, client IDs, AD group names
+cp master.json.example master.json # dmz only: host names, client IDs, AD group names
 docker compose up -d
 ```
 
-Every published port is bound to `127.0.0.1`; only Caddy Sentinel on the host reaches the stack. With another IdP or proxy, adapt `master.json` and see `docs/ACCESS-AUTH.md`.
+Firewall rules and the proxy secret: `docs/SENTINEL.md`. With another IdP or proxy, adapt `master.json` and see `docs/ACCESS-AUTH.md`.
 
 ## Quick start: Windows agent
 
@@ -195,9 +203,10 @@ For SMB profile stores, prefer a gMSA and grant it the required share/NTFS permi
 Build a Guacamole image containing the extension using `deploy/guacamole/Dockerfile.guacamole`. Add these environment variables to Guacamole:
 
 ```yaml
-SESSIONGUARD_MASTER_URL: http://sessionguard-master:8080
+SESSIONGUARD_MASTER_URL: https://sessionguard.example.org
 SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY}
 SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
+SESSIONGUARD_PROXY_SECRET: ${SESSIONGUARD_PROXY_SECRET}
 ```
 
 A brokered desktop connection uses:

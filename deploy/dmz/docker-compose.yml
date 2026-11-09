@@ -1,0 +1,79 @@
+# SessionGuard – DMZ-Host (zusammen mit Caddy Sentinel auf dem Host)
+#
+#   Internet / LAN ──443──► Caddy Sentinel (Host)
+#                             ├─ sso.example.org           Anmeldung (AD/LDAP)
+#                             ├─ sessionguard.example.org  ─► 127.0.0.1:18080 (dieser Stack)
+#                             └─ rds.example.org           ─► Guacamole-Worker (intern) :8080
+#
+# Der Master ist nur auf 127.0.0.1 erreichbar. Worker (Broker-API) und Agents
+# kommen über https://sessionguard.example.org, also über Caddy Sentinel.
+# Die Guacamole-Datenbank gehört ins interne Netz (../guacamole-db).
+#
+#   cp .env.example .env && cp master.json.example master.json   # ausfüllen
+#   docker compose up -d
+
+services:
+  sessionguard-postgres:
+    image: postgres:${POSTGRES_VERSION:-17}
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      POSTGRES_DB: ${SESSIONGUARD_DB_NAME:-sessionguard}
+      POSTGRES_USER: ${SESSIONGUARD_DB_USER:-sessionguard}
+      POSTGRES_PASSWORD: ${SESSIONGUARD_DB_PASSWORD:?SESSIONGUARD_DB_PASSWORD is required}
+    volumes:
+      - sessionguard-postgres:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  sessionguard-master:
+    image: ${SESSIONGUARD_IMAGE:?SESSIONGUARD_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      sessionguard-postgres:
+        condition: service_healthy
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      SESSIONGUARD_DATABASE_URL: postgres://${SESSIONGUARD_DB_USER:-sessionguard}:${SESSIONGUARD_DB_PASSWORD}@sessionguard-postgres:5432/${SESSIONGUARD_DB_NAME:-sessionguard}?sslmode=disable
+      SESSIONGUARD_ENROLLMENT_TOKEN: ${SESSIONGUARD_ENROLLMENT_TOKEN:?SESSIONGUARD_ENROLLMENT_TOKEN is required}
+      SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY:?SESSIONGUARD_BROKER_API_KEY is required}
+      SESSIONGUARD_OIDC_CLIENT_SECRET: ${SESSIONGUARD_OIDC_CLIENT_SECRET:?SESSIONGUARD_OIDC_CLIENT_SECRET is required}
+      SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET: ${SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET:?SESSIONGUARD_ACCESS_OIDC_CLIENT_SECRET is required}
+      SESSIONGUARD_ALERT_WEBHOOK_URL: ${SESSIONGUARD_ALERT_WEBHOOK_URL:-}
+      # System-CAs plus Root-CA aus ./ca (z. B. interne CA von Caddy Sentinel)
+      SSL_CERT_DIR: /etc/ssl/certs:/etc/sessionguard/ca
+    extra_hosts:
+      # Der Master holt Discovery, Token und Schlüssel von Sentinel. Der Name
+      # der Anmelde-Adresse wird im Container auf den Host abgebildet.
+      - "${SENTINEL_ISSUER_HOST:-sso.invalid}:host-gateway"
+    ports:
+      # Nur für Caddy Sentinel auf diesem Host.
+      - "127.0.0.1:${SESSIONGUARD_MASTER_PORT:-18080}:8080"
+    volumes:
+      - ./master.json:/etc/sessionguard/master.json:ro
+      - ./ca:/etc/sessionguard/ca:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks: [backend, egress]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  # Datenbank: kein Weg aus Docker hinaus.
+  backend:
+    internal: true
+  # Master: Port zum Host, Sentinel (OIDC), Alarm-Webhook.
+  egress: {}
+
+volumes:
+  sessionguard-postgres:

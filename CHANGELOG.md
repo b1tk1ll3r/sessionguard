@@ -4,9 +4,12 @@
 
 ### Deployment
 
-- Neues Referenz-Deployment in `deploy/`: Caddy Sentinel läuft auf dem Host (Reverse-Proxy, WAF/IDS, OIDC-Server mit AD-/LDAP-Anmeldung und zweitem Faktor), der komplette SessionGuard-Stack – Master, Guacamole, guacd, beide PostgreSQL – in **einem** Compose-Projekt (`docker-compose.yml`, optional `docker-compose.workers.yml` für weitere Guacamole-Worker). Alle Ports nur auf `127.0.0.1`, Datenbanken und guacd ohne veröffentlichten Port, Broker-API nur im internen Docker-Netz.
-- `deploy/Caddyfile.sentinel` mit den Sites für Anmelde-Adresse, Admin-Konsole und Guacamole; `deploy/master.json.example` und `deploy/.env.example` für Sentinel.
-- Entfernt: NetBird-Deployments (`production/`, `deploy/public-vps-netbird/`), die Pocket-ID-Anleitung, das Traefik-Beispiel und die eingecheckte `production/sessionguard-agent.exe` (Agent-Binaries nur noch über Releases). `harden-guacamole-db.sql` liegt jetzt unter `deploy/guacamole/`.
+- Neues Referenz-Deployment in `deploy/` über zwei Netzbereiche:
+  - `deploy/dmz`: SessionGuard-Master + PostgreSQL neben Caddy Sentinel (Reverse-Proxy, WAF/IDS, OIDC-Server mit AD-/LDAP-Anmeldung). Master nur auf `127.0.0.1:18080`.
+  - `deploy/worker`: Guacamole + guacd je Worker im internen Netz, Port nur auf der LAN-IP; Broker über `https://sessionguard.example.org`.
+  - `deploy/guacamole-db`: gemeinsame Guacamole-Datenbank im internen Netz, inkl. Ersteinrichtung ohne `guacadmin`.
+- `deploy/Caddyfile.sentinel`: Anmelde-Adresse, Admin-Konsole (Broker-API nur für die Worker-IPs, `/metrics` und `/auth/*` gesperrt) und Guacamole mit Sticky-Cookie über mehrere Worker.
+- Entfernt: NetBird-Deployments (`production/`, `deploy/public-vps-netbird/`), die Pocket-ID-Anleitung, das Traefik-Beispiel und die eingecheckte `production/sessionguard-agent.exe` (Agent-Binaries nur noch über Releases). `harden-guacamole-db.sql` liegt jetzt unter `deploy/guacamole-db/`.
 - Neue Anleitung `docs/SENTINEL.md`; `docs/ACCESS-AUTH.md`, `docs/INSTALLATION.md` (Teile A–F) und weitere Dokumente sind IdP- und proxy-neutral bzw. auf Sentinel umgestellt. SessionGuard bleibt unabhängig: Standard-OIDC und Standard-ForwardAuth.
 
 ### Revalidierung von Sitzungen
@@ -26,7 +29,7 @@
 ### Tests
 
 - Go-Unit-Tests für die Revalidierung (Rotation, Ablehnung, Gruppenentzug, Subject-/Namenswechsel, IdP-Ausfall mit Kulanzzeit, parallele Requests ohne doppelten Refresh, Admin-Sitzungen) und für das Sentinel-Beispiel `deploy/master.json.example`.
-- End-to-End gegen Caddy Sentinel 1.3.0 (aus dem Quellstand gebaut) mit einem AD-ähnlichen LDAP-Server: AD-Login (`DOMÄNE\benutzer` und UPN) mit TOTP, Gruppen-Mapping, Header-Spoofing, abgelehnte Gruppen, SSO zur Admin-Konsole, Revalidierung, Widerruf in Sentinel und Logout.
+- End-to-End gegen Caddy Sentinel 1.3.0 (aus dem Quellstand gebaut) mit einem AD-ähnlichen LDAP-Server: AD-Login (`DOMÄNE\benutzer` und UPN) mit TOTP, Gruppen-Mapping, Header-Spoofing, abgelehnte Gruppen, SSO zur Admin-Konsole, Revalidierung, Widerruf in Sentinel, Logout sowie die IP-Freigabe der Broker-API.
 
 ## 0.6.0 — Multi-Monitor (Span) + Security-Hardening
 

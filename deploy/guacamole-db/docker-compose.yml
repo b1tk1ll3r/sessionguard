@@ -1,0 +1,61 @@
+# Guacamole-Datenbank – im internen Netz, z. B. auf dem ersten Worker-Host
+#
+# Alle Guacamole-Worker nutzen dieselbe Datenbank (Benutzer, Verbindungen,
+# Rechte gibt es nur einmal). Der Port wird nur auf der hier angegebenen
+# Adresse veröffentlicht; die Firewall lässt nur die Worker-Hosts zu.
+#
+#   cp .env.example .env    # ausfüllen
+#   docker compose up -d
+
+services:
+  # Erzeugt einmalig das offizielle Schema und ersetzt das Standardkonto
+  # "guacadmin" (Passwort "guacadmin") durch GUAC_ADMIN_USER. Läuft nur beim
+  # allerersten Start der Datenbank; für eine bestehende Datenbank
+  # harden-guacamole-db.sql von Hand ausführen.
+  guac-init:
+    image: guacamole/guacamole:${GUACAMOLE_VERSION:-1.6.0}
+    restart: "no"
+    network_mode: none
+    environment:
+      GUAC_ADMIN_USER: ${GUAC_ADMIN_USER:?GUAC_ADMIN_USER (AD-Benutzername des ersten Guacamole-Admins) is required}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        /opt/guacamole/bin/initdb.sh --postgresql > /initdb/001-guacamole.sql
+        test -s /initdb/001-guacamole.sql
+        case "$$GUAC_ADMIN_USER" in
+          ""|guacadmin|*[!A-Za-z0-9._@-]*) echo "invalid GUAC_ADMIN_USER" >&2; exit 1 ;;
+        esac
+        sed "s/:'admin_user'/'$$GUAC_ADMIN_USER'/g" /sessionguard/harden-guacamole-db.sql > /initdb/002-sessionguard-hardening.sql
+    volumes:
+      - guac-init:/initdb
+      - ./harden-guacamole-db.sql:/sessionguard/harden-guacamole-db.sql:ro
+
+  guacamole-postgres:
+    image: postgres:${POSTGRES_VERSION:-17}
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      guac-init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: ${GUAC_DB_NAME:-guacamole_db}
+      POSTGRES_USER: ${GUAC_DB_USER:-guacamole_user}
+      POSTGRES_PASSWORD: ${GUAC_DB_PASSWORD:?GUAC_DB_PASSWORD is required}
+    ports:
+      # LAN-Adresse dieses Hosts – nicht 0.0.0.0. Firewall: nur Worker-Hosts.
+      - "${GUAC_DB_BIND:?GUAC_DB_BIND (LAN-IP dieses Hosts) is required}:5432:5432"
+    volumes:
+      - guacamole-postgres:/var/lib/postgresql/data
+      - guac-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  guacamole-postgres:
+  guac-init:

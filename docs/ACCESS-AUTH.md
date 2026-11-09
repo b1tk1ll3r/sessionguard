@@ -140,10 +140,10 @@ After a **legitimate rename** at the IdP, or after **switching the IdP** (new is
 ```bash
 docker compose exec -T guacamole-postgres psql -U guacamole_user -d guacamole_db \
   -v ON_ERROR_STOP=1 -v admin_user=YOUR_IDP_USERNAME \
-  < deploy/guacamole/harden-guacamole-db.sql
+  < deploy/guacamole-db/harden-guacamole-db.sql
 ```
 
-The script is idempotent and creates the admin account if it has never logged in. For **new** installations `guac-init` runs it automatically with `GUAC_ADMIN_USER` from `.env`.
+The script is idempotent and creates the admin account if it has never logged in. For **new** installations `guac-init` (`deploy/guacamole-db`) runs it automatically with `GUAC_ADMIN_USER` from `.env`.
 
 ## Admin console sessions
 

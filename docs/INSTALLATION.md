@@ -9,20 +9,22 @@ Alle Hostnamen (`sso.example.org`, `sessionguard.example.org`, `rds.example.org`
 ## 1. Zielbild
 
 ```text
-Internet / LAN
+Browser
    |
    v
-Caddy Sentinel (Host): TLS, WAF/IDS, Ratelimits, OIDC-Server ── AD/LDAP
+DMZ-Host: Caddy Sentinel (TLS, WAF/IDS, OIDC-Server ── AD/LDAP)
    |  sso.example.org            → Anmeldung (Domänenkonten + 2. Faktor)
-   |  sessionguard.example.org   → 127.0.0.1:8080 SessionGuard Master
-   |  rds.example.org            → forward_auth → 127.0.0.1:8081 Guacamole
+   |  sessionguard.example.org   → 127.0.0.1:18080 SessionGuard Master (deploy/dmz)
+   |  rds.example.org            → forward_auth → Master, dann → Worker :18080
    v
-Docker (deploy/docker-compose.yml)
-   Guacamole + SessionGuard-Extension ── guacd ──RDP──► RDS01..RDSn
-   SessionGuard Master ── PostgreSQL          ▲
-   Guacamole-PostgreSQL                       │ Agent-Heartbeats
-                                              └── https://sessionguard.example.org
+Internes Netz:
+   guac01..n: Guacamole + SessionGuard-Extension ── guacd ──RDP──► RDS01..RDSn
+              (deploy/worker)                                        │
+   Guacamole-PostgreSQL (deploy/guacamole-db)                        │ Agent-Heartbeats
+                                   https://sessionguard.example.org ◄┘
 ```
+
+Firewall-Regeln und Details: [SENTINEL.md](SENTINEL.md).
 
 | Komponente | Aufgabe |
 |---|---|
@@ -39,12 +41,12 @@ Docker (deploy/docker-compose.yml)
 
 ## 2. Voraussetzungen prüfen
 
-### 2.1 Linux-Host
+### 2.1 Linux-Hosts
 
-- Caddy Sentinel installiert (systemd), mit Active Directory verbunden (*Site-Login & Konten › Verzeichnis (AD)*)
-- Docker Engine mit Compose-Plugin
-- DNS: `sso.example.org`, `sessionguard.example.org`, `rds.example.org` zeigen auf den Host
-- Netzwerkweg vom Host zu den RDS-Hosts (TCP 3389) für guacd
+- **DMZ-Host:** Caddy Sentinel installiert (systemd), mit Active Directory verbunden (*Site-Login & Konten › Verzeichnis (AD)*); Docker Engine mit Compose-Plugin
+- **Worker (intern):** Docker Engine mit Compose-Plugin, Weg zu den RDS-Hosts (TCP 3389)
+- DNS: `sso.example.org`, `sessionguard.example.org`, `rds.example.org` zeigen auf den DMZ-Host – auch im internen DNS (Worker und Agents nutzen `sessionguard.example.org`)
+- Firewall zwischen DMZ und internem Netz: Tabelle in [SENTINEL.md](SENTINEL.md)
 
 ### 2.2 Windows-Seite
 
@@ -114,28 +116,22 @@ Die GitHub-Actions-Workflows bauen `sessionguard` und `sessionguard-guacamole` u
 
 ---
 
-# Teil E – SessionGuard-Stack
+# Teil E – SessionGuard-Master (DMZ)
 
-## 7. Stack konfigurieren
+## 7. Master konfigurieren und starten
 
 ```bash
-cd deploy
+cd deploy/dmz
 cp .env.example .env
 cp master.json.example master.json
 chmod 600 .env master.json
-```
-
-- `.env`: Images, Secrets aus Teil B, `GUAC_ADMIN_USER` (AD-Benutzername in Kleinbuchstaben, ersetzt `guacadmin`), `SENTINEL_ISSUER_HOST`.
-- `master.json`: Hostnamen, Client-IDs, `rbac.groups`, `access_auth.allowed_groups`, `guacamole_groups`.
-- Interne CA von Sentinel für das Zertifikat der Anmelde-Adresse: Root-Zertifikat nach `deploy/ca/`.
-
-## 8. Stack starten
-
-```bash
 docker compose up -d
-docker compose ps
 docker compose logs --tail=100 sessionguard-master
 ```
+
+- `.env`: Image, Secrets aus Teil B (ohne Proxy-Secret und Guacamole-DB), `SENTINEL_ISSUER_HOST`.
+- `master.json`: Hostnamen, Client-IDs, `rbac.groups`, `access_auth.allowed_groups`, `guacamole_groups`.
+- Interne CA von Sentinel für das Zertifikat der Anmelde-Adresse: Root-Zertifikat nach `deploy/dmz/ca/`.
 
 Erwartung: `master … listening on :8080 (store=postgres)` ohne OIDC-Fehler. Danach:
 
@@ -144,28 +140,49 @@ curl -s https://sessionguard.example.org/healthz
 curl -s https://sso.example.org/.well-known/openid-configuration
 ```
 
-## 9. RBAC prüfen
+## 8. RBAC prüfen
 
 Mit je einem Konto pro Rolle an `https://sessionguard.example.org/` anmelden. Ein Konto ohne passende Gruppe sieht bereits in Sentinel „Dein Konto hat keinen Zugriff“.
 
 ---
 
-# Teil F – Guacamole
+# Teil F – Guacamole (intern)
 
-## 10. Guacamole-Anmeldung prüfen
+## 9. Guacamole-Datenbank
+
+```bash
+cd deploy/guacamole-db
+cp .env.example .env    # GUAC_DB_BIND, GUAC_DB_PASSWORD, GUAC_ADMIN_USER
+docker compose up -d
+```
+
+Übernahme einer bestehenden Datenbank per `pg_dump`/`pg_restore`: [SENTINEL.md](SENTINEL.md), Abschnitt 3.
+
+## 10. Worker
+
+Je Worker-Host:
+
+```bash
+cd deploy/worker
+cp .env.example .env    # GUACAMOLE_BIND, GUAC_DB_HOST, Broker-Key, Proxy-Secret
+docker compose up -d
+```
+
+Die Worker-IPs im Caddyfile bei `remote_ip` (Broker) und `reverse_proxy` (Guacamole) eintragen.
+
+## 11. Guacamole-Anmeldung prüfen
 
 1. `https://rds.example.org/` aufrufen → Sentinel-Anmeldeseite.
 2. Mit AD-Konto und zweitem Faktor anmelden → Guacamole mit dem AD-Benutzernamen.
 3. `guacadmin` ist gelöscht; der in `GUAC_ADMIN_USER` gesetzte Benutzer ist Guacamole-Administrator.
 4. Guacamole-Benutzergruppen mit den Namen der `guac-…`-Gruppen anlegen und Verbindungen den Gruppen zuweisen.
 
-## 11. Header-Auth absichern
+## 12. Header-Auth absichern
 
-- Guacamole und Master veröffentlichen ihre Ports nur auf `127.0.0.1`.
-- Die Extension akzeptiert Identitäts-Header nur zusammen mit `SESSIONGUARD_PROXY_SECRET`. Prüfen auf dem Host:
+Vom internen Netz aus prüfen, dass ein direkter Aufruf eines Workers niemanden anmeldet:
 
 ```bash
-curl -s -H 'X-Guacamole-User: guacadmin' -X POST http://127.0.0.1:8081/api/tokens
+curl -s -H 'X-Guacamole-User: guacadmin' -X POST http://guac01:18080/api/tokens
 # erwartet: keine Anmeldung (403/401), im Guacamole-Log
 # "SessionGuard ignored identity header from a request without valid proxy secret"
 ```
@@ -1308,7 +1325,7 @@ Kein Active/Active-Deployment konfigurieren.
 - [ ] Helpdesk-Rechte sind begrenzt
 - [ ] Operator kann Maintenance/Sessions steuern
 - [ ] Policy Admin kann Policy ändern/rollbacken
-- [ ] gefälschter `X-Guacamole-User` – über Caddy und direkt auf `127.0.0.1:8081` – meldet niemanden an
+- [ ] gefälschter `X-Guacamole-User` – über Caddy und direkt auf `http://guac01:18080` – meldet niemanden an
 - [ ] Konto in Sentinel abmelden → SessionGuard-Sitzungen enden nach `revalidate_minutes`
 
 ---
@@ -1696,13 +1713,16 @@ Im Repository:
 README.md
 configs/master.example.json
 configs/agent.example.json
-deploy/docker-compose.yml
-deploy/docker-compose.workers.yml
-deploy/.env.example
-deploy/master.json.example
+deploy/dmz/docker-compose.yml
+deploy/dmz/.env.example
+deploy/dmz/master.json.example
+deploy/worker/docker-compose.yml
+deploy/worker/.env.example
+deploy/guacamole-db/docker-compose.yml
+deploy/guacamole-db/.env.example
+deploy/guacamole-db/harden-guacamole-db.sql
 deploy/Caddyfile.sentinel
 deploy/guacamole/Dockerfile.guacamole
-deploy/guacamole/harden-guacamole-db.sql
 deploy/guacamole/CI-CD.md
 scripts/build.ps1
 scripts/install-agent.ps1

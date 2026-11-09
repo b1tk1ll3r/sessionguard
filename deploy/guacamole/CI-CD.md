@@ -44,9 +44,10 @@ echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
 Then point the stacks at GHCR, e.g.:
 
 ```dotenv
-# deploy/.env
-SESSIONGUARD_IMAGE=ghcr.io/<owner>/sessionguard:latest
-SESSIONGUARD_GUAC_IMAGE=ghcr.io/<owner>/sessionguard-guacamole:latest
+# deploy/dmz/.env
+SESSIONGUARD_IMAGE=ghcr.io/<owner>/sessionguard:0.7.0
+# deploy/worker/.env
+SESSIONGUARD_GUAC_IMAGE=ghcr.io/<owner>/sessionguard-guacamole:0.7.0
 ```
 
 The `sessionguard-edgeguard` image is still published for deployments without

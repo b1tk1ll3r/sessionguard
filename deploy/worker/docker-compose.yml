@@ -1,0 +1,70 @@
+# Guacamole-Worker – im internen Netz, je Worker-Host einmal (guac01, guac02, …)
+#
+#   Caddy Sentinel (DMZ) ──18080──► guacamole ──4822──► guacd ──3389──► RDS-Hosts
+#                                      │
+#                                      ├──443──► https://sessionguard.example.org  (Broker)
+#                                      └──5432─► Guacamole-Datenbank (../guacamole-db)
+#
+# Guacamole vertraut dem Benutzernamen im Header X-Guacamole-User. Damit nicht
+# jeder PC im internen Netz, der Port 18080 erreicht, sich als beliebiger
+# Benutzer anmelden kann, zählt der Header nur zusammen mit
+# SESSIONGUARD_PROXY_SECRET – den kennt nur Caddy Sentinel.
+#
+#   cp .env.example .env    # ausfüllen
+#   docker compose up -d
+
+services:
+  # guacd hat keine Anmeldung: Port nie veröffentlichen.
+  guacd:
+    image: guacamole/guacd:${GUACAMOLE_VERSION:-1.6.0}
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      LOG_LEVEL: ${GUACD_LOG_LEVEL:-info}
+    volumes:
+      - drive:/drive
+
+  guacamole:
+    # Guacamole plus SessionGuard-Extension (deploy/guacamole/Dockerfile.guacamole)
+    image: ${SESSIONGUARD_GUAC_IMAGE:?SESSIONGUARD_GUAC_IMAGE is required}
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      guacd:
+        condition: service_started
+    environment:
+      WEBAPP_CONTEXT: ROOT
+      GUACD_HOSTNAME: guacd
+      GUACD_PORT: "4822"
+
+      # Broker über Caddy Sentinel (HTTPS). Im Caddyfile ist
+      # /api/v1/broker/* nur für die IPs der Worker-Hosts freigegeben.
+      SESSIONGUARD_MASTER_URL: ${SESSIONGUARD_MASTER_URL:?SESSIONGUARD_MASTER_URL is required}
+      SESSIONGUARD_BROKER_API_KEY: ${SESSIONGUARD_BROKER_API_KEY:?SESSIONGUARD_BROKER_API_KEY is required}
+      SESSIONGUARD_BROKER_TIMEOUT_MS: "2500"
+
+      # Gemeinsame Guacamole-Datenbank
+      POSTGRESQL_ENABLED: "true"
+      POSTGRESQL_HOSTNAME: ${GUAC_DB_HOST:?GUAC_DB_HOST is required}
+      POSTGRESQL_PORT: "5432"
+      POSTGRESQL_DATABASE: ${GUAC_DB_NAME:-guacamole_db}
+      POSTGRESQL_USERNAME: ${GUAC_DB_USER:-guacamole_user}
+      POSTGRESQL_PASSWORD: ${GUAC_DB_PASSWORD:?GUAC_DB_PASSWORD is required}
+      POSTGRESQL_AUTO_CREATE_ACCOUNTS: "true"
+
+      # Kein OIDC in Guacamole: Caddy Sentinel fragt SessionGuard
+      # (forward_auth) und reicht den geprüften Benutzer als Header weiter.
+      HTTP_AUTH_ENABLED: "true"
+      HTTP_AUTH_HEADER: X-Guacamole-User
+      SESSIONGUARD_HEADER_LOGIN: "true"
+      EXTENSION_PRIORITY: sessionguard-broker
+      SESSIONGUARD_PROXY_SECRET: ${SESSIONGUARD_PROXY_SECRET:?SESSIONGUARD_PROXY_SECRET is required}
+      REMOTE_IP_VALVE_ENABLED: "true"
+    ports:
+      # LAN-Adresse dieses Hosts – nicht 0.0.0.0. Firewall: nur der DMZ-Host.
+      - "${GUACAMOLE_BIND:?GUACAMOLE_BIND (LAN-IP dieses Worker-Hosts) is required}:${GUACAMOLE_PORT:-18080}:8080"
+    volumes:
+      - drive:/drive
+
+volumes:
+  drive:

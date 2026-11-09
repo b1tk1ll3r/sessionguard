@@ -100,7 +100,7 @@ Do not rely solely on the fact that the proxy strips inbound identity headers if
 
 ## Integration with the supplied compose
 
-`deploy/docker-compose.yml` contains the complete stack (Master, Guacamole, guacd, databases). When integrating into an existing Guacamole stack instead, the required additions are:
+`deploy/worker/docker-compose.yml` contains a complete Guacamole worker (Guacamole + guacd), `deploy/guacamole-db/` the shared database. When integrating into an existing Guacamole stack instead, the required additions are:
 
 1. build Guacamole using `deploy/guacamole/Dockerfile.guacamole`;
 2. add the three `SESSIONGUARD_*` variables above;
@@ -108,7 +108,7 @@ Do not rely solely on the fact that the proxy strips inbound identity headers if
 4. add SessionGuard Published Resources matching your Guacamole connections;
 5. replace fixed RDP hostnames in brokered connections with `${SESSIONGUARD_HOST}`.
 
-See `deploy/docker-compose.yml` for the environment of the `guacamole` service.
+See `deploy/worker/docker-compose.yml` for the environment of the `guacamole` service.
 
 ## Failure behavior
 

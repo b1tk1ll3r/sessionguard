@@ -4,8 +4,8 @@
 state.json
 master.json
 configs/agent.json
-deploy/master.json
-deploy/.env
-deploy/ca/*.pem
-deploy/ca/*.crt
+deploy/*/master.json
+deploy/*/.env
+deploy/dmz/ca/*.pem
+deploy/dmz/ca/*.crt
 guacamole-extension/target/
